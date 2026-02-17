@@ -32,6 +32,7 @@ pub async fn run_agent_loop(
     engine: Arc<ApprovalEngine>,
     model: String,
     max_tokens: u32,
+    approval_timeout_seconds: u64,
     system_prompt: String,
     mut user_rx: mpsc::Receiver<UserEvent>,
     agent_tx: mpsc::Sender<AgentEvent>,
@@ -58,6 +59,7 @@ pub async fn run_agent_loop(
                     &engine,
                     &model,
                     max_tokens,
+                    approval_timeout_seconds,
                     &system_prompt,
                     &mut messages,
                     &agent_tx,
@@ -81,6 +83,7 @@ async fn conversation_turn(
     engine: &Arc<ApprovalEngine>,
     model: &str,
     max_tokens: u32,
+    approval_timeout_seconds: u64,
     system_prompt: &str,
     messages: &mut Vec<Message>,
     agent_tx: &mpsc::Sender<AgentEvent>,
@@ -94,8 +97,7 @@ async fn conversation_turn(
             .messages(messages.iter().cloned())
             .tools(tool_defs);
 
-        let (assistant_blocks, stop_reason) =
-            stream_response(client, &request, agent_tx).await?;
+        let (assistant_blocks, stop_reason) = stream_response(client, &request, agent_tx).await?;
 
         // Record the assistant's response in conversation history.
         if !assistant_blocks.is_empty() {
@@ -111,6 +113,7 @@ async fn conversation_turn(
                 &assistant_blocks,
                 registry,
                 engine,
+                approval_timeout_seconds,
                 agent_tx,
             )
             .await;
@@ -214,10 +217,19 @@ async fn stream_response(
 
             StreamEvent::MessageDelta {
                 stop_reason: sr,
-                usage: _,
+                usage,
             } => {
                 if let Some(reason) = sr {
                     stop_reason = Some(reason);
+                }
+                let total = usage.input_tokens + usage.output_tokens;
+                if total > 0 {
+                    let _ = agent_tx
+                        .send(AgentEvent::Usage {
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                        })
+                        .await;
                 }
             }
 
@@ -247,6 +259,7 @@ async fn execute_tool_calls(
     assistant_blocks: &[ContentBlock],
     registry: &Registry,
     engine: &Arc<ApprovalEngine>,
+    approval_timeout_seconds: u64,
     agent_tx: &mpsc::Sender<AgentEvent>,
 ) -> Vec<ContentBlock> {
     let mut results = Vec::new();
@@ -310,17 +323,20 @@ async fn execute_tool_calls(
                     .await;
 
                 // Wait for user decision with timeout.
-                let decision = match tokio::time::timeout(Duration::from_secs(120), rx).await {
-                    Ok(Ok(decision)) => decision,
-                    Ok(Err(_)) => {
-                        // Oneshot channel dropped — treat as deny.
-                        ApprovalDecision::Deny
-                    }
-                    Err(_) => {
-                        // Timeout — treat as deny.
-                        ApprovalDecision::Deny
-                    }
-                };
+                let decision =
+                    match tokio::time::timeout(Duration::from_secs(approval_timeout_seconds), rx)
+                        .await
+                    {
+                        Ok(Ok(decision)) => decision,
+                        Ok(Err(_)) => {
+                            // Oneshot channel dropped — treat as deny.
+                            ApprovalDecision::Deny
+                        }
+                        Err(_) => {
+                            // Timeout — treat as deny.
+                            ApprovalDecision::Deny
+                        }
+                    };
 
                 // Record the decision in the engine for AllowAlways persistence.
                 engine.resolve(name, pattern.as_deref(), decision);
@@ -344,8 +360,7 @@ async fn execute_tool_calls(
                                 reason: "denied by user".to_string(),
                             })
                             .await;
-                        results
-                            .push(ContentBlock::tool_error(id, "Denied by user".to_string()));
+                        results.push(ContentBlock::tool_error(id, "Denied by user".to_string()));
                     }
                 }
             }
@@ -401,8 +416,9 @@ fn tool_result_to_block(tool_use_id: &str, result: &ToolResult) -> ContentBlock 
 /// Summarize tool parameters for display, truncating to 80 characters.
 fn summarize_params(params: &serde_json::Value) -> String {
     let s = params.to_string();
-    if s.len() > 80 {
-        format!("{}...", &s[..80])
+    let truncated: String = s.chars().take(80).collect();
+    if truncated.len() < s.len() {
+        format!("{}...", truncated)
     } else {
         s
     }

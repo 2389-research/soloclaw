@@ -283,10 +283,7 @@ pub fn allowlist_pattern(analysis: &AnalysisResult) -> Option<String> {
     if let Some(ref resolved) = analysis.resolved_path {
         return Some(resolved.to_string_lossy().into_owned());
     }
-    analysis
-        .segments
-        .first()
-        .map(|seg| seg.executable.clone())
+    analysis.segments.first().map(|seg| seg.executable.clone())
 }
 
 #[cfg(test)]

@@ -1,12 +1,17 @@
-// ABOUTME: Configuration loading for simpleclaw.
-// ABOUTME: Reads ~/.simpleclaw/config.toml, .mcp.json, and CLI overrides.
+// ABOUTME: Configuration loading and setup for soloclaw.
+// ABOUTME: Reads XDG config files, supports legacy path fallback, and provides interactive setup.
 
 use std::collections::HashMap;
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 use serde::Deserialize;
 
 use mux::prelude::*;
+
+use crate::approval::ApprovalsFile;
+
+const APP_NAME: &str = "soloclaw";
 
 /// Top-level configuration.
 #[derive(Debug, Clone, Deserialize)]
@@ -14,6 +19,8 @@ use mux::prelude::*;
 pub struct Config {
     pub llm: LlmConfig,
     pub approval: ApprovalConfig,
+    pub permissions: PermissionsConfig,
+    pub skills: SkillsConfig,
 }
 
 impl Default for Config {
@@ -21,6 +28,8 @@ impl Default for Config {
         Self {
             llm: LlmConfig::default(),
             approval: ApprovalConfig::default(),
+            permissions: PermissionsConfig::default(),
+            skills: SkillsConfig::default(),
         }
     }
 }
@@ -32,6 +41,10 @@ pub struct LlmConfig {
     pub provider: String,
     pub model: String,
     pub max_tokens: u32,
+    pub openai: ProviderConfig,
+    pub anthropic: ProviderConfig,
+    pub gemini: ProviderConfig,
+    pub openrouter: ProviderConfig,
     pub ollama: OllamaConfig,
 }
 
@@ -39,11 +52,22 @@ impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             provider: "anthropic".to_string(),
-            model: "claude-sonnet-4-20250514".to_string(),
+            model: "claude-sonnet-4-5-20250929".to_string(),
             max_tokens: 4096,
+            openai: ProviderConfig::default(),
+            anthropic: ProviderConfig::default(),
+            gemini: ProviderConfig::default(),
+            openrouter: ProviderConfig::default(),
             ollama: OllamaConfig::default(),
         }
     }
+}
+
+/// Shared provider configuration.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct ProviderConfig {
+    pub base_url: Option<String>,
 }
 
 /// Ollama-specific configuration.
@@ -82,6 +106,59 @@ impl Default for ApprovalConfig {
     }
 }
 
+/// Runtime permission toggles.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PermissionsConfig {
+    /// If true, bypasses all approval checks and executes tool calls directly.
+    pub bypass_approvals: bool,
+}
+
+impl Default for PermissionsConfig {
+    fn default() -> Self {
+        Self {
+            bypass_approvals: false,
+        }
+    }
+}
+
+/// Skill prompt loading configuration.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SkillsConfig {
+    /// Enable loading SKILL.md files into the system prompt.
+    pub enabled: bool,
+    /// Include XDG config skills from $XDG_CONFIG_HOME/soloclaw/skills.
+    pub include_xdg_config: bool,
+    /// Include workspace-level skills from ./skills.
+    pub include_workspace: bool,
+    /// Include personal skills from ~/.agents/skills.
+    pub include_agents_home: bool,
+    /// Include Codex skills from $CODEX_HOME/skills or ~/.codex/skills.
+    pub include_codex_home: bool,
+    /// Maximum number of skill files to include.
+    pub max_files: usize,
+    /// Maximum file size in bytes for each SKILL.md.
+    pub max_file_bytes: usize,
+    /// Maximum total characters across all included skill contents.
+    pub max_total_chars: usize,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            include_xdg_config: true,
+            include_workspace: true,
+            include_agents_home: true,
+            include_codex_home: true,
+            max_files: 24,
+            max_file_bytes: 128 * 1024,
+            max_total_chars: 32_000,
+        }
+    }
+}
+
 /// MCP server configuration from .mcp.json.
 #[derive(Debug, Deserialize)]
 struct McpConfigFile {
@@ -99,31 +176,87 @@ struct McpServerEntry {
 }
 
 impl Config {
-    /// Load config from ~/.simpleclaw/config.toml, falling back to defaults.
+    /// Load config from XDG config path, falling back to legacy path and then defaults.
     pub fn load() -> anyhow::Result<Self> {
-        let path = Self::config_path();
+        let path = Self::resolved_config_path();
         if !path.exists() {
-            return Ok(Self::default());
+            let xdg_path = Self::config_path();
+            if let Some(parent) = xdg_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&xdg_path, default_config_toml())?;
+            let content = std::fs::read_to_string(&xdg_path)?;
+            let config: Self = toml::from_str(&content)?;
+            return Ok(config);
         }
         let content = std::fs::read_to_string(&path)?;
         let config: Self = toml::from_str(&content)?;
         Ok(config)
     }
 
-    /// Path to the config file.
-    pub fn config_path() -> PathBuf {
+    /// Path to the XDG config directory for soloclaw.
+    pub fn config_dir() -> PathBuf {
+        if let Ok(xdg_home) = std::env::var("XDG_CONFIG_HOME") {
+            return PathBuf::from(xdg_home).join(APP_NAME);
+        }
+
+        if let Some(base) = dirs::config_dir() {
+            return base.join(APP_NAME);
+        }
+
+        if let Some(home) = dirs::home_dir() {
+            return home.join(".config").join(APP_NAME);
+        }
+
+        PathBuf::from(".").join(APP_NAME)
+    }
+
+    /// Legacy config directory used before XDG migration.
+    pub fn legacy_config_dir() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".simpleclaw")
-            .join("config.toml")
+            .join(format!(".{}", APP_NAME))
+    }
+
+    /// Path to the config file.
+    pub fn config_path() -> PathBuf {
+        Self::config_dir().join("config.toml")
     }
 
     /// Path to the approvals file.
     pub fn approvals_path() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".simpleclaw")
-            .join("approvals.json")
+        Self::config_dir().join("approvals.json")
+    }
+
+    /// Path to provider secrets loaded as dotenv env vars.
+    pub fn secrets_env_path() -> PathBuf {
+        Self::config_dir().join("secrets.env")
+    }
+
+    fn resolved_config_path() -> PathBuf {
+        let xdg = Self::config_path();
+        if xdg.exists() {
+            return xdg;
+        }
+
+        let legacy = Self::legacy_config_dir().join("config.toml");
+        if legacy.exists() {
+            return legacy;
+        }
+
+        xdg
+    }
+}
+
+/// Recommended default model for each provider.
+pub fn default_model_for_provider(provider: &str) -> &'static str {
+    match provider {
+        "openai" => "gpt-5.2",
+        "anthropic" => "claude-sonnet-4-5-20250929",
+        "gemini" => "gemini-2.5-pro",
+        "openrouter" => "anthropic/claude-sonnet-4",
+        "ollama" => "llama3.2",
+        _ => "claude-sonnet-4-5-20250929",
     }
 }
 
@@ -169,6 +302,191 @@ fn find_mcp_config() -> Option<PathBuf> {
     None
 }
 
+/// Interactive setup command: initializes XDG config and provider secrets.
+pub fn run_setup() -> anyhow::Result<()> {
+    let config_dir = Config::config_dir();
+    std::fs::create_dir_all(&config_dir)?;
+    let skills_dir = config_dir.join("skills");
+    std::fs::create_dir_all(&skills_dir)?;
+
+    let config_path = Config::config_path();
+    if !config_path.exists() {
+        std::fs::write(&config_path, default_config_toml())?;
+        println!("Created {}", config_path.display());
+    } else {
+        println!("Using existing {}", config_path.display());
+    }
+
+    let approvals_path = Config::approvals_path();
+    if !approvals_path.exists() {
+        let approvals = serde_json::to_string_pretty(&ApprovalsFile::default())?;
+        std::fs::write(&approvals_path, approvals)?;
+        println!("Created {}", approvals_path.display());
+    } else {
+        println!("Using existing {}", approvals_path.display());
+    }
+
+    let secrets_path = Config::secrets_env_path();
+    let mut env_map = load_env_file(&secrets_path)?;
+    configure_provider_keys(&mut env_map)?;
+    write_env_file(&secrets_path, &env_map)?;
+
+    let skills_readme = skills_dir.join("README.md");
+    if !skills_readme.exists() {
+        std::fs::write(&skills_readme, default_skills_readme())?;
+        println!("Created {}", skills_readme.display());
+    } else {
+        println!("Using existing {}", skills_readme.display());
+    }
+
+    println!("Wrote {}", secrets_path.display());
+    println!("Setup complete.");
+    println!("Run: claw");
+
+    Ok(())
+}
+
+fn configure_provider_keys(env_map: &mut HashMap<String, String>) -> anyhow::Result<()> {
+    let keys = [
+        ("ANTHROPIC_API_KEY", "Anthropic"),
+        ("OPENAI_API_KEY", "OpenAI"),
+        ("GEMINI_API_KEY", "Google Gemini"),
+        ("OPENROUTER_API_KEY", "OpenRouter"),
+    ];
+
+    println!();
+    println!("Configure AI provider keys (leave blank to skip):");
+    for (key, provider_name) in keys {
+        let existing = env_map.get(key).cloned().unwrap_or_default();
+        let prompt = if existing.is_empty() {
+            format!("{provider_name} ({key}): ")
+        } else {
+            format!("{provider_name} ({key}) [existing set, Enter to keep]: ")
+        };
+
+        let input = prompt_line(&prompt)?;
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        env_map.insert(key.to_string(), trimmed.to_string());
+    }
+
+    Ok(())
+}
+
+fn prompt_line(prompt: &str) -> anyhow::Result<String> {
+    print!("{prompt}");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input)
+}
+
+fn load_env_file(path: &PathBuf) -> anyhow::Result<HashMap<String, String>> {
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+
+    let mut map = HashMap::new();
+    for line in std::fs::read_to_string(path)?.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            map.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
+    Ok(map)
+}
+
+fn write_env_file(path: &PathBuf, env_map: &HashMap<String, String>) -> anyhow::Result<()> {
+    let mut keys = env_map.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+
+    let mut out = String::from("# soloclaw provider secrets\n");
+    for key in keys {
+        if let Some(value) = env_map.get(&key) {
+            out.push_str(&format!("{}={}\n", key, value));
+        }
+    }
+
+    std::fs::write(path, out)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(path, perms)?;
+    }
+
+    Ok(())
+}
+
+fn default_config_toml() -> String {
+    r#"[llm]
+provider = "anthropic"
+model = "claude-sonnet-4-5-20250929"
+max_tokens = 4096
+
+[llm.openai]
+base_url = "https://api.openai.com/v1"
+# Recommended: model = "gpt-5.2"
+
+[llm.anthropic]
+base_url = "https://api.anthropic.com"
+
+[llm.gemini]
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+
+[llm.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+
+[llm.ollama]
+base_url = "http://localhost:11434"
+
+[approval]
+security = "allowlist"
+ask = "on-miss"
+ask_fallback = "deny"
+timeout_seconds = 120
+
+[permissions]
+bypass_approvals = false
+
+[skills]
+enabled = true
+include_xdg_config = true
+include_workspace = true
+include_agents_home = true
+include_codex_home = true
+max_files = 24
+max_file_bytes = 131072
+max_total_chars = 32000
+"#
+    .to_string()
+}
+
+fn default_skills_readme() -> &'static str {
+    r#"# soloclaw skills
+
+Put skill folders here.
+
+Each skill should have this layout:
+
+```text
+skills/
+  my-skill/
+    SKILL.md
+```
+
+`soloclaw` will load `SKILL.md` files from this directory into the system prompt
+when `skills.enabled` and `skills.include_xdg_config` are true in `config.toml`.
+"#
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,7 +496,12 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.llm.provider, "anthropic");
         assert_eq!(config.llm.max_tokens, 4096);
+        assert!(config.llm.openai.base_url.is_none());
         assert_eq!(config.approval.timeout_seconds, 120);
+        assert!(!config.permissions.bypass_approvals);
+        assert!(config.skills.enabled);
+        assert!(config.skills.include_xdg_config);
+        assert_eq!(config.skills.max_files, 24);
     }
 
     #[test]
@@ -189,6 +512,9 @@ provider = "ollama"
 model = "llama3"
 max_tokens = 2048
 
+[llm.openai]
+base_url = "https://example-openai/v1"
+
 [llm.ollama]
 base_url = "http://localhost:11434"
 
@@ -196,14 +522,32 @@ base_url = "http://localhost:11434"
 security = "full"
 ask = "always"
 timeout_seconds = 60
+
+[permissions]
+bypass_approvals = true
+
+[skills]
+enabled = true
+include_xdg_config = true
+include_workspace = false
+max_files = 5
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.llm.provider, "ollama");
         assert_eq!(config.llm.model, "llama3");
         assert_eq!(config.llm.max_tokens, 2048);
+        assert_eq!(
+            config.llm.openai.base_url.as_deref(),
+            Some("https://example-openai/v1")
+        );
         assert_eq!(config.approval.security, "full");
         assert_eq!(config.approval.ask, "always");
         assert_eq!(config.approval.timeout_seconds, 60);
+        assert!(config.permissions.bypass_approvals);
+        assert!(config.skills.enabled);
+        assert!(config.skills.include_xdg_config);
+        assert!(!config.skills.include_workspace);
+        assert_eq!(config.skills.max_files, 5);
     }
 
     #[test]
@@ -214,7 +558,9 @@ provider = "openai"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.llm.provider, "openai");
-        assert_eq!(config.llm.model, "claude-sonnet-4-20250514");
+        assert_eq!(config.llm.model, "claude-sonnet-4-5-20250929");
         assert_eq!(config.approval.timeout_seconds, 120);
+        assert!(!config.permissions.bypass_approvals);
+        assert!(config.skills.enabled);
     }
 }

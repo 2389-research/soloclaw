@@ -16,10 +16,7 @@ pub fn approval_line(description: &str, selected: usize) -> Vec<Line<'static>> {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            description.to_string(),
-            Style::default().fg(Color::White),
-        ),
+        Span::styled(description.to_string(), Style::default().fg(Color::White)),
     ]);
 
     let mut option_spans = Vec::new();
@@ -38,10 +35,7 @@ pub fn approval_line(description: &str, selected: usize) -> Vec<Line<'static>> {
                     .add_modifier(Modifier::BOLD),
             ));
         } else {
-            option_spans.push(Span::styled(
-                label,
-                Style::default().fg(Color::DarkGray),
-            ));
+            option_spans.push(Span::styled(label, Style::default().fg(Color::DarkGray)));
         }
     }
 
@@ -60,12 +54,20 @@ mod tests {
         assert_eq!(lines.len(), 2);
 
         // Header line should contain APPROVE? and description
-        let header_text: String = lines[0].spans.iter().map(|s| s.content.to_string()).collect();
+        let header_text: String = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
         assert!(header_text.contains("APPROVE?"));
         assert!(header_text.contains("run bash command"));
 
         // Options line should have all three options
-        let options_text: String = lines[1].spans.iter().map(|s| s.content.to_string()).collect();
+        let options_text: String = lines[1]
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
         assert!(options_text.contains("Allow Once"));
         assert!(options_text.contains("Always Allow"));
         assert!(options_text.contains("Deny"));

@@ -1,4 +1,4 @@
-# simpleclaw Implementation Plan
+# soloclaw Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
@@ -9,7 +9,7 @@
 **Tech Stack:** Rust (edition 2024), mux-rs (path dep), ratatui + crossterm, tokio, clap, serde/toml/serde_json
 
 **Reference files:**
-- Design doc: `docs/plans/2026-02-16-simpleclaw-design.md`
+- Design doc: `docs/plans/2026-02-16-soloclaw-design.md`
 - mux-rs prelude: `../mux-rs/src/prelude.rs` — all public types
 - mux-rs agent-test-tui: `../mux-rs/agent-test-tui/src/main.rs` — reference agent loop
 - openclaw approval: see design doc for pattern description
@@ -26,7 +26,7 @@
 
 ```toml
 [package]
-name = "simpleclaw"
+name = "soloclaw"
 version = "0.1.0"
 edition = "2024"
 
@@ -51,24 +51,24 @@ futures = "0.3"
 **Step 2: Create minimal main.rs**
 
 ```rust
-// ABOUTME: Entry point for simpleclaw — a TUI agent with layered tool approval.
+// ABOUTME: Entry point for soloclaw — a TUI agent with layered tool approval.
 // ABOUTME: Parses CLI args, loads config, and launches the app.
 
 fn main() {
-    println!("simpleclaw");
+    println!("soloclaw");
 }
 ```
 
 **Step 3: Verify it compiles**
 
-Run: `cd /Users/harper/Public/src/2389/simpleclaw && cargo build`
+Run: `cd /Users/harper/Public/src/2389/soloclaw && cargo build`
 Expected: Compiles successfully (may take a while for first build)
 
 **Step 4: Commit**
 
 ```bash
 git add Cargo.toml src/main.rs
-git commit -m "feat: scaffold simpleclaw project with dependencies"
+git commit -m "feat: scaffold soloclaw project with dependencies"
 ```
 
 ---
@@ -226,19 +226,19 @@ pub use types::*;
 Update `src/main.rs` to add the module:
 
 ```rust
-// ABOUTME: Entry point for simpleclaw — a TUI agent with layered tool approval.
+// ABOUTME: Entry point for soloclaw — a TUI agent with layered tool approval.
 // ABOUTME: Parses CLI args, loads config, and launches the app.
 
 mod approval;
 
 fn main() {
-    println!("simpleclaw");
+    println!("soloclaw");
 }
 ```
 
 **Step 3: Run tests to verify they pass**
 
-Run: `cargo test -p simpleclaw approval::types`
+Run: `cargo test -p soloclaw approval::types`
 Expected: 4 tests pass
 
 **Step 4: Commit**
@@ -372,7 +372,7 @@ mod tests {
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cargo test -p simpleclaw approval::policy`
+Run: `cargo test -p soloclaw approval::policy`
 Expected: FAIL — `todo!()` panics
 
 **Step 3: Implement the decision logic**
@@ -420,7 +420,7 @@ pub fn evaluate_approval(
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cargo test -p simpleclaw approval::policy`
+Run: `cargo test -p soloclaw approval::policy`
 Expected: 9 tests pass
 
 **Step 5: Add to mod.rs and commit**
@@ -444,7 +444,7 @@ git commit -m "feat: add approval policy decision logic with full test coverage"
 
 ```rust
 // ABOUTME: Persistent allowlist for tool approval patterns.
-// ABOUTME: Loads from and saves to ~/.simpleclaw/approvals.json.
+// ABOUTME: Loads from and saves to ~/.soloclaw/approvals.json.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn load_missing_file_returns_default() {
-        let path = PathBuf::from("/tmp/nonexistent_simpleclaw_test.json");
+        let path = PathBuf::from("/tmp/nonexistent_soloclaw_test.json");
         let f = ApprovalsFile::load(&path).unwrap();
         assert_eq!(f.version, 1);
         assert!(f.tools.is_empty());
@@ -670,7 +670,7 @@ Add `tempfile = "3"` to `[dev-dependencies]` in Cargo.toml.
 
 **Step 2: Run tests to verify they pass**
 
-Run: `cargo test -p simpleclaw approval::allowlist`
+Run: `cargo test -p soloclaw approval::allowlist`
 Expected: 8 tests pass
 
 **Step 3: Wire into mod.rs and commit**
@@ -991,7 +991,7 @@ mod tests {
 
 **Step 2: Run tests**
 
-Run: `cargo test -p simpleclaw approval::analysis`
+Run: `cargo test -p soloclaw approval::analysis`
 Expected: All tests pass
 
 **Step 3: Wire into mod.rs and commit**
@@ -1261,7 +1261,7 @@ mod tests {
 
 **Step 2: Run tests**
 
-Run: `cargo test -p simpleclaw approval::engine`
+Run: `cargo test -p soloclaw approval::engine`
 Expected: 6 tests pass
 
 **Step 3: Wire into mod.rs and commit**
@@ -1284,8 +1284,8 @@ git commit -m "feat: add ApprovalEngine — orchestrates policy, allowlist, and 
 **Step 1: Write the implementation with tests**
 
 ```rust
-// ABOUTME: Configuration loading for simpleclaw.
-// ABOUTME: Reads ~/.simpleclaw/config.toml, .mcp.json, and CLI overrides.
+// ABOUTME: Configuration loading for soloclaw.
+// ABOUTME: Reads ~/.soloclaw/config.toml, .mcp.json, and CLI overrides.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1385,7 +1385,7 @@ struct McpServerEntry {
 }
 
 impl Config {
-    /// Load config from ~/.simpleclaw/config.toml, falling back to defaults.
+    /// Load config from ~/.soloclaw/config.toml, falling back to defaults.
     pub fn load() -> anyhow::Result<Self> {
         let path = Self::config_path();
         if !path.exists() {
@@ -1400,7 +1400,7 @@ impl Config {
     pub fn config_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".simpleclaw")
+            .join(".soloclaw")
             .join("config.toml")
     }
 
@@ -1408,7 +1408,7 @@ impl Config {
     pub fn approvals_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".simpleclaw")
+            .join(".soloclaw")
             .join("approvals.json")
     }
 }
@@ -1508,7 +1508,7 @@ provider = "openai"
 
 **Step 2: Run tests**
 
-Run: `cargo test -p simpleclaw config`
+Run: `cargo test -p soloclaw config`
 Expected: 3 tests pass
 
 **Step 3: Wire into main.rs and commit**
@@ -1603,7 +1603,7 @@ pub use provider::*;
 
 **Step 2: Run tests**
 
-Run: `cargo test -p simpleclaw agent::provider`
+Run: `cargo test -p soloclaw agent::provider`
 Expected: 1 test passes
 
 **Step 3: Wire into main.rs and commit**
@@ -1855,7 +1855,7 @@ mod tests {
 Create `src/tui/mod.rs`:
 
 ```rust
-// ABOUTME: TUI module — ratatui full-screen interface for simpleclaw.
+// ABOUTME: TUI module — ratatui full-screen interface for soloclaw.
 // ABOUTME: Chat display, input handling, status bar, and inline approval prompts.
 
 pub mod state;
@@ -1865,7 +1865,7 @@ pub use state::*;
 
 **Step 2: Run tests**
 
-Run: `cargo test -p simpleclaw tui::state`
+Run: `cargo test -p soloclaw tui::state`
 Expected: 6 tests pass
 
 **Step 3: Wire into main.rs and commit**
@@ -2148,7 +2148,7 @@ pub mod status;
 Update `src/tui/mod.rs`:
 
 ```rust
-// ABOUTME: TUI module — ratatui full-screen interface for simpleclaw.
+// ABOUTME: TUI module — ratatui full-screen interface for soloclaw.
 // ABOUTME: Chat display, input handling, status bar, and inline approval prompts.
 
 pub mod state;
@@ -2159,7 +2159,7 @@ pub use state::*;
 
 **Step 5: Run tests**
 
-Run: `cargo test -p simpleclaw tui`
+Run: `cargo test -p soloclaw tui`
 Expected: All widget tests pass
 
 **Step 6: Commit**
@@ -2213,7 +2213,7 @@ pub fn render(frame: &mut Frame, state: &TuiState) {
 
 fn render_header(frame: &mut Frame, area: Rect, state: &TuiState) {
     let header = Line::from(vec![
-        Span::styled(" simpleclaw ", Style::default().fg(Color::White).bold()),
+        Span::styled(" soloclaw ", Style::default().fg(Color::White).bold()),
         Span::styled(" | ", Style::default().fg(Color::DarkGray)),
         Span::styled(&state.model, Style::default().fg(Color::Cyan)),
         Span::styled(" | ", Style::default().fg(Color::DarkGray)),
@@ -2512,7 +2512,7 @@ mod tests {
 **Step 3: Update tui/mod.rs**
 
 ```rust
-// ABOUTME: TUI module — ratatui full-screen interface for simpleclaw.
+// ABOUTME: TUI module — ratatui full-screen interface for soloclaw.
 // ABOUTME: Chat display, input handling, status bar, and inline approval prompts.
 
 pub mod input;
@@ -2525,7 +2525,7 @@ pub use state::*;
 
 **Step 4: Run tests**
 
-Run: `cargo test -p simpleclaw tui`
+Run: `cargo test -p soloclaw tui`
 Expected: All tests pass
 
 **Step 5: Commit**
@@ -2846,7 +2846,7 @@ pub use provider::*;
 
 **Step 3: Verify it compiles**
 
-Run: `cargo build -p simpleclaw`
+Run: `cargo build -p soloclaw`
 Expected: Compiles (may have warnings)
 
 **Step 4: Commit**
@@ -3114,7 +3114,7 @@ fn update_last_tool_status(state: &mut TuiState, tool_name: &str, status: ToolCa
 **Step 2: Rewrite main.rs with CLI parsing**
 
 ```rust
-// ABOUTME: Entry point for simpleclaw — a TUI agent with layered tool approval.
+// ABOUTME: Entry point for soloclaw — a TUI agent with layered tool approval.
 // ABOUTME: Parses CLI args, loads config, and launches the app.
 
 mod agent;
@@ -3126,7 +3126,7 @@ mod tui;
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "simpleclaw", about = "TUI agent with layered tool approval")]
+#[command(name = "soloclaw", about = "TUI agent with layered tool approval")]
 struct Cli {
     /// LLM provider (anthropic, openai, gemini, openrouter, ollama)
     #[arg(long)]
@@ -3165,7 +3165,7 @@ async fn main() -> anyhow::Result<()> {
 
 **Step 3: Verify it compiles**
 
-Run: `cargo build -p simpleclaw`
+Run: `cargo build -p soloclaw`
 Expected: Compiles (fix any issues with mux-rs API mismatches)
 
 **Step 4: Commit**
@@ -3188,7 +3188,7 @@ git commit -m "feat: add app orchestrator and CLI — wires TUI, agent loop, and
 // ABOUTME: Integration tests for the approval engine.
 // ABOUTME: Tests the full flow: policy + allowlist + analysis + persistence.
 
-use simpleclaw::approval::*;
+use soloclaw::approval::*;
 use std::path::PathBuf;
 
 #[test]
@@ -3296,8 +3296,8 @@ git commit -m "test: add approval engine integration tests"
 use ratatui::prelude::*;
 use ratatui::Terminal;
 
-use simpleclaw::tui::state::*;
-use simpleclaw::tui::ui;
+use soloclaw::tui::state::*;
+use soloclaw::tui::ui;
 
 fn test_terminal() -> Terminal<ratatui::backend::TestBackend> {
     let backend = ratatui::backend::TestBackend::new(80, 24);
@@ -3314,9 +3314,9 @@ fn renders_empty_state() {
         .unwrap();
 
     let buffer = terminal.backend().buffer().clone();
-    // Verify header contains "simpleclaw"
+    // Verify header contains "soloclaw"
     let header_line: String = (0..80).map(|x| buffer.cell((x, 0)).unwrap().symbol().chars().next().unwrap_or(' ')).collect();
-    assert!(header_line.contains("simpleclaw"));
+    assert!(header_line.contains("soloclaw"));
     assert!(header_line.contains("test-model"));
 }
 

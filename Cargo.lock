@@ -1525,28 +1525,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "simpleclaw"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "clap",
- "crossterm",
- "dirs",
- "dotenvy",
- "futures",
- "glob",
- "mux",
- "ratatui",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml",
-]
-
-[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1566,6 +1544,29 @@ checksum = "86f4aa3ad99f2088c990dfa82d367e19cb29268ed67c574d10d0a4bfe71f07e0"
 dependencies = [
  "libc",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "soloclaw"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "crossterm",
+ "dirs",
+ "dotenvy",
+ "futures",
+ "glob",
+ "mux",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

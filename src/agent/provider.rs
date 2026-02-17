@@ -13,20 +13,44 @@ use crate::config::LlmConfig;
 pub fn create_client(config: &LlmConfig) -> anyhow::Result<Arc<dyn LlmClient>> {
     match config.provider.as_str() {
         "anthropic" => {
-            let client = AnthropicClient::from_env()?;
+            let mut client = AnthropicClient::from_env()?;
+            if let Some(url) = config
+                .anthropic
+                .base_url
+                .as_deref()
+                .filter(|s| !s.is_empty())
+            {
+                client = client.with_base_url(url);
+            }
             Ok(Arc::new(client))
         }
         "openai" => {
-            let client = OpenAIClient::from_env()?;
+            let mut client = OpenAIClient::from_env()?;
+            if let Some(url) = config.openai.base_url.as_deref().filter(|s| !s.is_empty()) {
+                client = client.with_base_url(url);
+            }
             Ok(Arc::new(client))
         }
         "gemini" => {
-            let client = GeminiClient::from_env()?;
+            let mut client = GeminiClient::from_env()?;
+            if let Some(url) = config.gemini.base_url.as_deref().filter(|s| !s.is_empty()) {
+                client = client.with_base_url(url);
+            }
             Ok(Arc::new(client))
         }
         "openrouter" => {
-            let client = OpenRouterClient::from_env()?;
-            Ok(Arc::new(client))
+            if let Some(url) = config
+                .openrouter
+                .base_url
+                .as_deref()
+                .filter(|s| !s.is_empty())
+            {
+                let client = OpenAIClient::openrouter_from_env()?.with_base_url(url);
+                Ok(Arc::new(client))
+            } else {
+                let client = OpenRouterClient::from_env()?;
+                Ok(Arc::new(client))
+            }
         }
         "ollama" => {
             let base_url = format!("{}/v1", config.ollama.base_url.trim_end_matches('/'));

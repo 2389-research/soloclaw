@@ -38,15 +38,25 @@ pub enum EngineOutcome {
 pub struct ApprovalEngine {
     approvals: Mutex<ApprovalsFile>,
     approvals_path: PathBuf,
+    bypass_approvals: bool,
 }
 
 impl ApprovalEngine {
     /// Create a new engine by loading an ApprovalsFile from disk.
     pub fn new(approvals_path: PathBuf) -> anyhow::Result<Self> {
+        Self::new_with_bypass(approvals_path, false)
+    }
+
+    /// Create a new engine by loading an ApprovalsFile from disk with bypass option.
+    pub fn new_with_bypass(
+        approvals_path: PathBuf,
+        bypass_approvals: bool,
+    ) -> anyhow::Result<Self> {
         let approvals = ApprovalsFile::load(&approvals_path)?;
         Ok(Self {
             approvals: Mutex::new(approvals),
             approvals_path,
+            bypass_approvals,
         })
     }
 
@@ -55,6 +65,7 @@ impl ApprovalEngine {
         Self {
             approvals: Mutex::new(approvals),
             approvals_path: path,
+            bypass_approvals: false,
         }
     }
 
@@ -63,6 +74,10 @@ impl ApprovalEngine {
     /// For "bash" tools, performs command analysis (safe-bin detection, allowlist matching).
     /// For other tools, checks whether the tool name appears in its own allowlist.
     pub fn check(&self, info: &ToolCallInfo) -> EngineOutcome {
+        if self.bypass_approvals {
+            return EngineOutcome::Allowed;
+        }
+
         let approvals = self.approvals.lock().expect("approvals lock poisoned");
         let tool_sec = approvals.tool_security(&info.tool_name);
         let security = tool_sec.security;
@@ -119,10 +134,7 @@ impl ApprovalEngine {
     /// Returns (allowlist_satisfied, pattern) where pattern is the resolved executable path
     /// or executable name for potential allowlisting.
     fn check_bash(&self, approvals: &ApprovalsFile, params: &Value) -> (bool, Option<String>) {
-        let command = params
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let command = params.get("command").and_then(|v| v.as_str()).unwrap_or("");
 
         let analysis = analyze_command(command);
 
@@ -291,5 +303,19 @@ mod tests {
         // Verify the pattern was NOT persisted.
         let reloaded = ApprovalsFile::load(&path).unwrap();
         assert!(!reloaded.is_allowed("bash", "/usr/bin/rm"));
+    }
+
+    #[test]
+    fn bypass_mode_allows_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("approvals.json");
+        let engine = ApprovalEngine::new_with_bypass(path, true).unwrap();
+
+        let info = ToolCallInfo {
+            tool_name: "bash".to_string(),
+            params: serde_json::json!({ "command": "rm -rf /" }),
+        };
+
+        assert_eq!(engine.check(&info), EngineOutcome::Allowed);
     }
 }

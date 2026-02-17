@@ -1,7 +1,7 @@
 // ABOUTME: Approval policy decision logic for tool invocations.
 // ABOUTME: Evaluates SecurityLevel, AskMode, and allowlist status to produce an ApprovalOutcome.
 
-use super::types::{AskMode, ApprovalOutcome, SecurityLevel};
+use super::types::{ApprovalOutcome, AskMode, SecurityLevel};
 
 /// Evaluate the approval policy for a tool invocation.
 ///
@@ -31,8 +31,8 @@ pub fn evaluate_approval(
                 ApprovalOutcome::Allow
             } else {
                 match ask {
-                    AskMode::OnMiss => ApprovalOutcome::Ask,   // Rule 4
-                    AskMode::Off => ApprovalOutcome::Denied,   // Rule 5
+                    AskMode::OnMiss => ApprovalOutcome::Ask, // Rule 4
+                    AskMode::Off => ApprovalOutcome::Denied, // Rule 5
                     AskMode::Always => unreachable!("handled above"),
                 }
             }

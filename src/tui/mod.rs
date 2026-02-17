@@ -1,4 +1,4 @@
-// ABOUTME: TUI module — ratatui full-screen interface for simpleclaw.
+// ABOUTME: TUI module — ratatui full-screen interface for soloclaw.
 // ABOUTME: Chat display, input handling, status bar, and inline approval prompts.
 
 pub mod input;

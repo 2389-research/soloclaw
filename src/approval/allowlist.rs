@@ -110,13 +110,13 @@ impl ApprovalsFile {
     ///
     /// Creates the tool config with default security if it doesn't exist yet.
     pub fn add_to_allowlist(&mut self, tool_name: &str, pattern: &str) {
-        let config = self
-            .tools
-            .entry(tool_name.to_string())
-            .or_insert_with(|| ToolApprovalConfig {
-                security: self.defaults.clone(),
-                allowlist: Vec::new(),
-            });
+        let config =
+            self.tools
+                .entry(tool_name.to_string())
+                .or_insert_with(|| ToolApprovalConfig {
+                    security: self.defaults.clone(),
+                    allowlist: Vec::new(),
+                });
 
         // Skip duplicates.
         if config.allowlist.iter().any(|e| e.pattern == pattern) {

@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use simpleclaw::prompt::{build_system_prompt, load_context_files, ContextFile, SystemPromptParams};
+use soloclaw::prompt::{ContextFile, SystemPromptParams, build_system_prompt, load_context_files};
 
 fn base_params() -> SystemPromptParams {
     SystemPromptParams {
@@ -42,8 +42,9 @@ fn base_params() -> SystemPromptParams {
         os: "linux".to_string(),
         arch: "x86_64".to_string(),
         shell: "/bin/bash".to_string(),
-        model: "claude-sonnet-4-20250514".to_string(),
+        model: "claude-sonnet-4-5-20250929".to_string(),
         context_files: vec![],
+        skill_files: vec![],
     }
 }
 
@@ -51,7 +52,7 @@ fn base_params() -> SystemPromptParams {
 fn full_prompt_has_all_runtime_sections() {
     let prompt = build_system_prompt(&base_params());
 
-    assert!(prompt.contains("SimpleClaw"), "missing identity");
+    assert!(prompt.contains("SingleClaw"), "missing identity");
     assert!(prompt.contains("## Tooling"), "missing tooling section");
     assert!(
         prompt.contains("- bash: Execute a bash command"),
@@ -74,7 +75,7 @@ fn full_prompt_has_all_runtime_sections() {
     assert!(prompt.contains("## Runtime"), "missing runtime");
     assert!(prompt.contains("os=linux (x86_64)"), "missing os info");
     assert!(
-        prompt.contains("model=claude-sonnet-4-20250514"),
+        prompt.contains("model=claude-sonnet-4-5-20250929"),
         "missing model"
     );
 }
@@ -82,7 +83,7 @@ fn full_prompt_has_all_runtime_sections() {
 #[test]
 fn prompt_without_context_files_has_no_project_context() {
     let prompt = build_system_prompt(&base_params());
-    assert!(!prompt.contains("# Project Context"));
+    assert!(!prompt.contains("## Project Context"));
 }
 
 #[test]
@@ -93,7 +94,7 @@ fn prompt_with_soul_file_embodies_persona() {
         content: "Be a friendly pirate who loves Rust.".to_string(),
     }];
     let prompt = build_system_prompt(&params);
-    assert!(prompt.contains("# Project Context"));
+    assert!(prompt.contains("## Project Context"));
     assert!(prompt.contains("embody its persona"));
     assert!(prompt.contains("friendly pirate"));
 }
@@ -103,7 +104,7 @@ fn prompt_with_multiple_context_files() {
     let mut params = base_params();
     params.context_files = vec![
         ContextFile {
-            path: ".simpleclaw.md".to_string(),
+            path: ".soloclaw.md".to_string(),
             content: "This project uses React.".to_string(),
         },
         ContextFile {
@@ -112,9 +113,9 @@ fn prompt_with_multiple_context_files() {
         },
     ];
     let prompt = build_system_prompt(&params);
-    assert!(prompt.contains("## .simpleclaw.md"));
+    assert!(prompt.contains("### .soloclaw.md"));
     assert!(prompt.contains("This project uses React."));
-    assert!(prompt.contains("## AGENTS.md"));
+    assert!(prompt.contains("### AGENTS.md"));
     assert!(prompt.contains("Follow TDD."));
 }
 
@@ -138,24 +139,24 @@ fn load_context_files_returns_empty_for_nonexistent_dir() {
 
 #[test]
 fn load_context_files_finds_files_in_workspace() {
-    let dir = std::env::temp_dir().join("simpleclaw-integration-ctx-v2");
+    let dir = std::env::temp_dir().join("soloclaw-integration-ctx-v2");
     let _ = std::fs::create_dir_all(&dir);
     std::fs::write(dir.join("SOUL.md"), "Be awesome.").unwrap();
-    std::fs::write(dir.join(".simpleclaw.md"), "Project notes.").unwrap();
+    std::fs::write(dir.join(".soloclaw.md"), "Project notes.").unwrap();
 
     let files = load_context_files(dir.to_str().unwrap());
     assert!(files.iter().any(|f| f.path == "SOUL.md"));
-    assert!(files.iter().any(|f| f.path == ".simpleclaw.md"));
+    assert!(files.iter().any(|f| f.path == ".soloclaw.md"));
 
     let _ = std::fs::remove_file(dir.join("SOUL.md"));
-    let _ = std::fs::remove_file(dir.join(".simpleclaw.md"));
+    let _ = std::fs::remove_file(dir.join(".soloclaw.md"));
 }
 
 #[test]
 fn section_order_matches_openclaw() {
     let prompt = build_system_prompt(&base_params());
 
-    let identity_pos = prompt.find("SimpleClaw").unwrap();
+    let identity_pos = prompt.find("SingleClaw").unwrap();
     let tooling_pos = prompt.find("## Tooling").unwrap();
     let style_pos = prompt.find("## Tool Call Style").unwrap();
     let safety_pos = prompt.find("## Safety").unwrap();

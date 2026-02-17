@@ -57,15 +57,17 @@ pub enum AgentEvent {
         responder: oneshot::Sender<ApprovalDecision>,
     },
     /// A tool call was denied.
-    ToolCallDenied {
-        tool_name: String,
-        reason: String,
-    },
+    ToolCallDenied { tool_name: String, reason: String },
     /// A tool call completed with a result.
     ToolResult {
         tool_name: String,
         content: String,
         is_error: bool,
+    },
+    /// Token usage update from a completed API response.
+    Usage {
+        input_tokens: u32,
+        output_tokens: u32,
     },
     /// An error occurred in the agent loop.
     Error(String),
@@ -149,9 +151,92 @@ impl TuiState {
         Some(trimmed)
     }
 
+    /// Clamp the cursor position to the valid character range of the input buffer.
+    pub fn clamp_cursor(&mut self) {
+        self.cursor_pos = self.cursor_pos.min(self.input_char_len());
+    }
+
+    /// Return the current cursor byte index in the UTF-8 input buffer.
+    pub fn cursor_byte_index(&self) -> usize {
+        char_index_to_byte_index(&self.input, self.cursor_pos)
+    }
+
+    /// Return the total number of characters in the input buffer.
+    pub fn input_char_len(&self) -> usize {
+        self.input.chars().count()
+    }
+
+    /// Insert a character at the cursor and advance by one character.
+    pub fn insert_char_at_cursor(&mut self, c: char) {
+        self.clamp_cursor();
+        let byte_index = self.cursor_byte_index();
+        self.input.insert(byte_index, c);
+        self.cursor_pos += 1;
+    }
+
+    /// Delete the character before the cursor (backspace behavior).
+    pub fn backspace_char(&mut self) {
+        self.clamp_cursor();
+        if self.cursor_pos == 0 {
+            return;
+        }
+
+        let end = self.cursor_byte_index();
+        let start = char_index_to_byte_index(&self.input, self.cursor_pos - 1);
+        self.input.replace_range(start..end, "");
+        self.cursor_pos -= 1;
+    }
+
+    /// Delete the character at the cursor (delete behavior).
+    pub fn delete_char_at_cursor(&mut self) {
+        self.clamp_cursor();
+        if self.cursor_pos >= self.input_char_len() {
+            return;
+        }
+
+        let start = self.cursor_byte_index();
+        let end = char_index_to_byte_index(&self.input, self.cursor_pos + 1);
+        self.input.replace_range(start..end, "");
+    }
+
+    /// Move cursor one character to the left.
+    pub fn move_cursor_left(&mut self) {
+        self.clamp_cursor();
+        self.cursor_pos = self.cursor_pos.saturating_sub(1);
+    }
+
+    /// Move cursor one character to the right.
+    pub fn move_cursor_right(&mut self) {
+        self.clamp_cursor();
+        if self.cursor_pos < self.input_char_len() {
+            self.cursor_pos += 1;
+        }
+    }
+
+    /// Move cursor to start of input.
+    pub fn move_cursor_home(&mut self) {
+        self.cursor_pos = 0;
+    }
+
+    /// Move cursor to end of input.
+    pub fn move_cursor_end(&mut self) {
+        self.cursor_pos = self.input_char_len();
+    }
+
     /// Whether there is a pending approval prompt.
     pub fn has_pending_approval(&self) -> bool {
         self.pending_approval.is_some()
+    }
+}
+
+fn char_index_to_byte_index(s: &str, char_index: usize) -> usize {
+    if char_index == 0 {
+        return 0;
+    }
+
+    match s.char_indices().nth(char_index) {
+        Some((idx, _)) => idx,
+        None => s.len(),
     }
 }
 
@@ -221,5 +306,34 @@ mod tests {
         assert_eq!(result, None);
         // Input is NOT cleared when empty
         assert_eq!(state.input, "   ");
+    }
+
+    #[test]
+    fn utf8_input_editing_is_safe() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.insert_char_at_cursor('a');
+        state.insert_char_at_cursor('🙂');
+        state.insert_char_at_cursor('é');
+        assert_eq!(state.input, "a🙂é");
+        assert_eq!(state.cursor_pos, 3);
+
+        state.move_cursor_left();
+        state.backspace_char();
+        assert_eq!(state.input, "aé");
+        assert_eq!(state.cursor_pos, 1);
+
+        state.delete_char_at_cursor();
+        assert_eq!(state.input, "a");
+        assert_eq!(state.cursor_pos, 1);
+    }
+
+    #[test]
+    fn clamp_cursor_handles_out_of_range_positions() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "hi🙂".to_string();
+        state.cursor_pos = 999;
+        state.clamp_cursor();
+        assert_eq!(state.cursor_pos, 3);
+        assert_eq!(state.cursor_byte_index(), state.input.len());
     }
 }

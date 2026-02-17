@@ -3,9 +3,9 @@
 
 use std::collections::HashMap;
 
-use simpleclaw::approval::{
-    ApprovalsFile, ApprovalDecision, ApprovalEngine, EngineOutcome, ToolApprovalConfig,
-    ToolCallInfo, ToolSecurity, SecurityLevel, AskMode,
+use soloclaw::approval::{
+    ApprovalDecision, ApprovalEngine, ApprovalsFile, AskMode, EngineOutcome, SecurityLevel,
+    ToolApprovalConfig, ToolCallInfo, ToolSecurity,
 };
 
 /// Full flow: bash with a safe command (grep) should be auto-allowed

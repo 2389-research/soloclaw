@@ -5,26 +5,33 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyEvent};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 
 use mux::prelude::*;
 
 use crate::agent;
 use crate::approval::ApprovalEngine;
-use crate::prompt::{build_system_prompt, load_context_files, SystemPromptParams};
-use crate::config::{load_mcp_configs, Config};
-use crate::tui::input::{handle_key, InputResult};
+use crate::config::{Config, load_mcp_configs};
+use crate::prompt::{
+    SystemPromptParams, build_system_prompt, load_context_files, load_skill_files,
+};
+use crate::tui::input::{InputResult, handle_key};
 use crate::tui::state::{
     AgentEvent, ChatMessageKind, PendingApproval, ToolCallStatus, TuiState, UserEvent,
 };
 use crate::tui::ui::render;
+
+const MOUSE_SCROLL_STEP: u16 = 3;
+const MAX_AGENT_EVENTS_PER_TICK: usize = 128;
 
 /// Top-level application that orchestrates all subsystems.
 pub struct App {
@@ -39,8 +46,9 @@ impl App {
 
     /// Run the application: set up subsystems, launch the agent loop, and drive the TUI.
     pub async fn run(self) -> anyhow::Result<()> {
-        // Load .env if present.
+        // Load local .env if present, then XDG secrets.
         let _ = dotenvy::dotenv();
+        let _ = dotenvy::from_path(Config::secrets_env_path());
 
         // Create LLM client.
         let client = agent::create_client(&self.config.llm)?;
@@ -78,7 +86,10 @@ impl App {
 
         // Create approval engine.
         let approvals_path = Config::approvals_path();
-        let engine = Arc::new(ApprovalEngine::new(approvals_path)?);
+        let engine = Arc::new(ApprovalEngine::new_with_bypass(
+            approvals_path,
+            self.config.permissions.bypass_approvals,
+        )?);
 
         // Create channels for agent <-> TUI communication.
         let (user_tx, user_rx) = mpsc::channel::<UserEvent>(16);
@@ -86,6 +97,7 @@ impl App {
 
         let model = self.config.llm.model.clone();
         let max_tokens = self.config.llm.max_tokens;
+        let approval_timeout_seconds = self.config.approval.timeout_seconds;
         let tool_count = registry.count().await;
 
         // Gather runtime info and build the system prompt.
@@ -94,6 +106,7 @@ impl App {
             .unwrap_or_else(|_| ".".to_string());
 
         let context_files = load_context_files(&workspace_dir);
+        let skill_files = load_skill_files(&workspace_dir, &self.config.skills);
 
         // Collect tool names and summaries from the registry.
         let tool_defs = registry.to_definitions().await;
@@ -112,6 +125,7 @@ impl App {
             shell: std::env::var("SHELL").unwrap_or_default(),
             model: model.clone(),
             context_files,
+            skill_files,
         });
 
         // Spawn the agent loop in a background task.
@@ -121,6 +135,7 @@ impl App {
             engine,
             model.clone(),
             max_tokens,
+            approval_timeout_seconds,
             system_prompt,
             user_rx,
             agent_tx,
@@ -129,7 +144,7 @@ impl App {
         // Set up terminal.
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -137,7 +152,7 @@ impl App {
         let original_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let _ = disable_raw_mode();
-            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
             original_hook(info);
         }));
 
@@ -149,7 +164,11 @@ impl App {
 
         // Cleanup terminal.
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
         terminal.show_cursor()?;
 
         // Signal agent to quit and wait for it.
@@ -176,18 +195,33 @@ impl App {
             // Draw the current state.
             terminal.draw(|frame| render(frame, state))?;
 
-            // Poll for crossterm keyboard events (50ms timeout).
+            // Poll for crossterm events (50ms timeout).
             if event::poll(Duration::from_millis(50))? {
-                if let Event::Key(key) = event::read()? {
-                    match handle_key_event(state, key, user_tx).await {
+                match event::read()? {
+                    Event::Key(key) => match handle_key_event(state, key, user_tx).await {
                         LoopAction::Continue => {}
                         LoopAction::Quit => break,
-                    }
+                    },
+                    Event::Mouse(mouse) => match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            state.scroll_offset =
+                                state.scroll_offset.saturating_add(MOUSE_SCROLL_STEP);
+                        }
+                        MouseEventKind::ScrollDown => {
+                            state.scroll_offset =
+                                state.scroll_offset.saturating_sub(MOUSE_SCROLL_STEP);
+                        }
+                        _ => {}
+                    },
+                    _ => {}
                 }
             }
 
-            // Drain all pending agent events.
-            while let Ok(event) = agent_rx.try_recv() {
+            // Drain a bounded number of pending agent events so user input stays responsive.
+            for _ in 0..MAX_AGENT_EVENTS_PER_TICK {
+                let Ok(event) = agent_rx.try_recv() else {
+                    break;
+                };
                 match handle_agent_event(state, event) {
                     LoopAction::Continue => {}
                     LoopAction::Quit => break,
@@ -267,6 +301,7 @@ fn handle_agent_event(state: &mut TuiState, event: AgentEvent) -> LoopAction {
                 selected: 0,
                 responder: Some(responder),
             });
+            state.scroll_offset = 0;
         }
         AgentEvent::ToolCallDenied { tool_name, reason } => {
             update_tool_status(state, &tool_name, ToolCallStatus::Denied);
@@ -281,6 +316,12 @@ fn handle_agent_event(state: &mut TuiState, event: AgentEvent) -> LoopAction {
             is_error,
         } => {
             state.push_message(ChatMessageKind::ToolResult { is_error }, content);
+        }
+        AgentEvent::Usage {
+            input_tokens,
+            output_tokens,
+        } => {
+            state.total_tokens += (input_tokens + output_tokens) as u64;
         }
         AgentEvent::Error(msg) => {
             state.push_message(ChatMessageKind::System, format!("Error: {}", msg));

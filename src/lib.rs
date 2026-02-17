@@ -1,4 +1,4 @@
-// ABOUTME: Library root for simpleclaw — re-exports all modules for integration testing.
+// ABOUTME: Library root for soloclaw — re-exports all modules for integration testing.
 // ABOUTME: The binary entry point is in main.rs, which uses this crate as a library.
 
 pub mod agent;

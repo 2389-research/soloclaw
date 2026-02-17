@@ -1,4 +1,4 @@
-# simpleclaw Design
+# soloclaw Design
 
 A full-screen ratatui TUI agent powered by mux-rs, with an openclaw-style layered tool approval system.
 
@@ -14,12 +14,12 @@ A full-screen ratatui TUI agent powered by mux-rs, with an openclaw-style layere
 ### Project Structure
 
 ```
-simpleclaw/
+soloclaw/
 ├── Cargo.toml              # standalone, path dep on ../mux-rs
 ├── src/
 │   ├── main.rs             # entry point, CLI parsing, bootstrap
 │   ├── app.rs              # App struct, event loop orchestrator
-│   ├── config.rs           # load ~/.simpleclaw/ config and .mcp.json
+│   ├── config.rs           # load ~/.soloclaw/ config and .mcp.json
 │   ├── approval/
 │   │   ├── mod.rs
 │   │   ├── types.rs        # SecurityLevel, AskMode, AskFallback enums
@@ -80,7 +80,7 @@ enum ApprovalDecision { AllowOnce, AllowAlways, Deny }
 - Safe-bin list (grep, jq, sort, cut, etc.) auto-approve on stdin-only input
 - Other tools skip analysis, go straight to security/ask evaluation
 
-### Persistent Allowlist (`~/.simpleclaw/approvals.json`)
+### Persistent Allowlist (`~/.soloclaw/approvals.json`)
 
 ```json
 {
@@ -118,7 +118,7 @@ enum ApprovalDecision { AllowOnce, AllowAlways, Deny }
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  simpleclaw · claude-sonnet-4 · 12 tools         │  header bar
+│  soloclaw · claude-sonnet-4 · 12 tools         │  header bar
 ├──────────────────────────────────────────────────┤
 │                                                  │
 │  You: What files are in this directory?           │
@@ -160,7 +160,7 @@ Uses mux-rs `create_message_stream()` for streaming. On each response:
 
 ## Configuration
 
-### `~/.simpleclaw/config.toml`
+### `~/.soloclaw/config.toml`
 
 ```toml
 [llm]

@@ -27,6 +27,11 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> InputResult {
         return InputResult::Quit;
     }
 
+    // Scroll keys should always work, even during streaming or approval prompts.
+    if handle_scroll_key(state, key.code) {
+        return InputResult::None;
+    }
+
     // If there's a pending approval, route to approval handler
     if state.has_pending_approval() {
         return handle_approval_key(state, key);
@@ -47,51 +52,57 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> InputResult {
             }
         }
         KeyCode::Char(c) => {
-            state.input.insert(state.cursor_pos, c);
-            state.cursor_pos += 1;
+            state.insert_char_at_cursor(c);
             InputResult::None
         }
         KeyCode::Backspace => {
-            if state.cursor_pos > 0 {
-                state.cursor_pos -= 1;
-                state.input.remove(state.cursor_pos);
-            }
+            state.backspace_char();
             InputResult::None
         }
         KeyCode::Delete => {
-            if state.cursor_pos < state.input.len() {
-                state.input.remove(state.cursor_pos);
-            }
+            state.delete_char_at_cursor();
             InputResult::None
         }
         KeyCode::Left => {
-            state.cursor_pos = state.cursor_pos.saturating_sub(1);
+            state.move_cursor_left();
             InputResult::None
         }
         KeyCode::Right => {
-            if state.cursor_pos < state.input.len() {
-                state.cursor_pos += 1;
-            }
+            state.move_cursor_right();
             InputResult::None
         }
         KeyCode::Home => {
-            state.cursor_pos = 0;
+            state.move_cursor_home();
             InputResult::None
         }
         KeyCode::End => {
-            state.cursor_pos = state.input.len();
-            InputResult::None
-        }
-        KeyCode::Up => {
-            state.scroll_offset = state.scroll_offset.saturating_add(1);
-            InputResult::None
-        }
-        KeyCode::Down => {
-            state.scroll_offset = state.scroll_offset.saturating_sub(1);
+            state.move_cursor_end();
             InputResult::None
         }
         KeyCode::Esc => InputResult::Quit,
         _ => InputResult::None,
+    }
+}
+
+fn handle_scroll_key(state: &mut TuiState, key: KeyCode) -> bool {
+    match key {
+        KeyCode::Up => {
+            state.scroll_offset = state.scroll_offset.saturating_add(1);
+            true
+        }
+        KeyCode::Down => {
+            state.scroll_offset = state.scroll_offset.saturating_sub(1);
+            true
+        }
+        KeyCode::PageUp => {
+            state.scroll_offset = state.scroll_offset.saturating_add(10);
+            true
+        }
+        KeyCode::PageDown => {
+            state.scroll_offset = state.scroll_offset.saturating_sub(10);
+            true
+        }
+        _ => false,
     }
 }
 
@@ -116,14 +127,11 @@ fn handle_approval_key(state: &mut TuiState, key: KeyEvent) -> InputResult {
         KeyCode::Char('2') => resolve_approval(state, ApprovalDecision::AllowAlways),
         KeyCode::Char('3') => resolve_approval(state, ApprovalDecision::Deny),
         KeyCode::Enter => {
-            let decision = state
-                .pending_approval
-                .as_ref()
-                .map(|a| match a.selected {
-                    0 => ApprovalDecision::AllowOnce,
-                    1 => ApprovalDecision::AllowAlways,
-                    _ => ApprovalDecision::Deny,
-                });
+            let decision = state.pending_approval.as_ref().map(|a| match a.selected {
+                0 => ApprovalDecision::AllowOnce,
+                1 => ApprovalDecision::AllowAlways,
+                _ => ApprovalDecision::Deny,
+            });
             if let Some(d) = decision {
                 resolve_approval(state, d)
             } else {
@@ -148,6 +156,7 @@ fn resolve_approval(state: &mut TuiState, decision: ApprovalDecision) -> InputRe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::oneshot;
 
     fn make_key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -210,5 +219,68 @@ mod tests {
         let result = handle_key(&mut state, make_key(KeyCode::Char('x')));
         assert_eq!(result, InputResult::None);
         assert_eq!(state.input, "");
+    }
+
+    #[test]
+    fn streaming_still_allows_scroll_keys() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.streaming = true;
+        state.scroll_offset = 2;
+
+        assert_eq!(
+            handle_key(&mut state, make_key(KeyCode::Up)),
+            InputResult::None
+        );
+        assert_eq!(state.scroll_offset, 3);
+
+        assert_eq!(
+            handle_key(&mut state, make_key(KeyCode::Down)),
+            InputResult::None
+        );
+        assert_eq!(state.scroll_offset, 2);
+    }
+
+    #[test]
+    fn approval_mode_still_allows_scroll_keys() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        let (tx, _rx) = oneshot::channel();
+        state.pending_approval = Some(crate::tui::state::PendingApproval {
+            description: "approve?".to_string(),
+            pattern: None,
+            tool_name: "bash".to_string(),
+            selected: 0,
+            responder: Some(tx),
+        });
+        state.scroll_offset = 4;
+
+        assert_eq!(
+            handle_key(&mut state, make_key(KeyCode::Up)),
+            InputResult::None
+        );
+        assert_eq!(state.scroll_offset, 5);
+
+        assert_eq!(
+            handle_key(&mut state, make_key(KeyCode::PageDown)),
+            InputResult::None
+        );
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn unicode_editing_through_key_events() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        handle_key(&mut state, make_key(KeyCode::Char('🙂')));
+        handle_key(&mut state, make_key(KeyCode::Char('é')));
+        assert_eq!(state.input, "🙂é");
+        assert_eq!(state.cursor_pos, 2);
+
+        handle_key(&mut state, make_key(KeyCode::Left));
+        handle_key(&mut state, make_key(KeyCode::Delete));
+        assert_eq!(state.input, "🙂");
+        assert_eq!(state.cursor_pos, 1);
+
+        handle_key(&mut state, make_key(KeyCode::Backspace));
+        assert_eq!(state.input, "");
+        assert_eq!(state.cursor_pos, 0);
     }
 }
