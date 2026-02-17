@@ -3,4 +3,5 @@
 
 pub mod approval;
 pub mod chat;
+pub mod question;
 pub mod status;

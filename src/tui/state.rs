@@ -56,6 +56,12 @@ pub enum AgentEvent {
         tool_name: String,
         responder: oneshot::Sender<ApprovalDecision>,
     },
+    /// The LLM is asking the user a question via the ask_user tool.
+    AskUser {
+        question: String,
+        tool_call_id: String,
+        responder: oneshot::Sender<String>,
+    },
     /// A tool call was denied.
     ToolCallDenied { tool_name: String, reason: String },
     /// A tool call completed with a result.
@@ -94,6 +100,14 @@ pub struct PendingApproval {
     pub responder: Option<oneshot::Sender<ApprovalDecision>>,
 }
 
+/// A pending question from the LLM shown inline in the TUI.
+pub struct PendingQuestion {
+    pub question: String,
+    pub tool_call_id: String,
+    /// One-shot channel to send the user's answer back to the agent loop.
+    pub responder: Option<oneshot::Sender<String>>,
+}
+
 /// Full TUI application state.
 pub struct TuiState {
     pub messages: Vec<ChatMessage>,
@@ -102,6 +116,7 @@ pub struct TuiState {
     pub scroll_offset: u16,
     pub streaming: bool,
     pub pending_approval: Option<PendingApproval>,
+    pub pending_question: Option<PendingQuestion>,
     pub model: String,
     pub tool_count: usize,
     pub total_tokens: u64,
@@ -117,6 +132,7 @@ impl TuiState {
             scroll_offset: 0,
             streaming: false,
             pending_approval: None,
+            pending_question: None,
             model,
             tool_count,
             total_tokens: 0,
@@ -235,6 +251,80 @@ impl TuiState {
     pub fn has_pending_approval(&self) -> bool {
         self.pending_approval.is_some()
     }
+
+    /// Whether there is a pending question from the LLM.
+    pub fn has_pending_question(&self) -> bool {
+        self.pending_question.is_some()
+    }
+
+    /// Split the input on newlines.
+    pub fn input_lines(&self) -> Vec<&str> {
+        self.input.split('\n').collect()
+    }
+
+    /// Which line the cursor is currently on (0-indexed).
+    pub fn cursor_line(&self) -> usize {
+        let byte_idx = self.cursor_byte_index();
+        self.input[..byte_idx].matches('\n').count()
+    }
+
+    /// Column position (in characters) within the current line.
+    pub fn cursor_column(&self) -> usize {
+        let byte_idx = self.cursor_byte_index();
+        let text_before = &self.input[..byte_idx];
+        match text_before.rfind('\n') {
+            Some(nl_pos) => text_before[nl_pos + 1..].chars().count(),
+            None => text_before.chars().count(),
+        }
+    }
+
+    /// Number of lines in the input buffer.
+    pub fn input_line_count(&self) -> usize {
+        self.input.split('\n').count()
+    }
+
+    /// Move cursor up one line within the input. Returns false if already at line 0.
+    pub fn move_cursor_up_in_input(&mut self) -> bool {
+        let line = self.cursor_line();
+        if line == 0 {
+            return false;
+        }
+        let col = self.cursor_column();
+        let lines = self.input_lines();
+        let target_col = col.min(lines[line - 1].chars().count());
+        // Calculate new cursor_pos (char-based)
+        let mut pos = 0;
+        for (i, l) in lines.iter().enumerate() {
+            if i == line - 1 {
+                pos += target_col;
+                break;
+            }
+            pos += l.chars().count() + 1; // +1 for \n
+        }
+        self.cursor_pos = pos;
+        true
+    }
+
+    /// Move cursor down one line within the input. Returns false if already at last line.
+    pub fn move_cursor_down_in_input(&mut self) -> bool {
+        let line = self.cursor_line();
+        let lines = self.input_lines();
+        if line >= lines.len() - 1 {
+            return false;
+        }
+        let col = self.cursor_column();
+        let target_col = col.min(lines[line + 1].chars().count());
+        let mut pos = 0;
+        for (i, l) in lines.iter().enumerate() {
+            if i == line + 1 {
+                pos += target_col;
+                break;
+            }
+            pos += l.chars().count() + 1; // +1 for \n
+        }
+        self.cursor_pos = pos;
+        true
+    }
 }
 
 fn char_index_to_byte_index(s: &str, char_index: usize) -> usize {
@@ -261,9 +351,43 @@ mod tests {
         assert_eq!(state.scroll_offset, 0);
         assert!(!state.streaming);
         assert!(!state.has_pending_approval());
+        assert!(!state.has_pending_question());
         assert_eq!(state.model, "claude-sonnet");
         assert_eq!(state.tool_count, 5);
         assert_eq!(state.total_tokens, 0);
+    }
+
+    #[test]
+    fn pending_question_lifecycle() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        assert!(!state.has_pending_question());
+
+        let (tx, _rx) = oneshot::channel();
+        state.pending_question = Some(PendingQuestion {
+            question: "What is your name?".to_string(),
+            tool_call_id: "call-42".to_string(),
+            responder: Some(tx),
+        });
+        assert!(state.has_pending_question());
+
+        let q = state.pending_question.as_ref().unwrap();
+        assert_eq!(q.question, "What is your name?");
+        assert_eq!(q.tool_call_id, "call-42");
+
+        state.pending_question = None;
+        assert!(!state.has_pending_question());
+    }
+
+    #[test]
+    fn pending_question_responder_sends() {
+        let (tx, rx) = oneshot::channel();
+        let question = PendingQuestion {
+            question: "test?".to_string(),
+            tool_call_id: "id-1".to_string(),
+            responder: Some(tx),
+        };
+        question.responder.unwrap().send("my answer".to_string()).unwrap();
+        assert_eq!(rx.blocking_recv().unwrap(), "my answer");
     }
 
     #[test]
@@ -391,5 +515,93 @@ mod tests {
         state.insert_str_at_cursor("");
         assert_eq!(state.input, "hello");
         assert_eq!(state.cursor_pos, 3);
+    }
+
+    // --- Multiline input helper tests ---
+
+    #[test]
+    fn cursor_line_single_line() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "hello".to_string();
+        state.cursor_pos = 3;
+        assert_eq!(state.cursor_line(), 0);
+    }
+
+    #[test]
+    fn cursor_line_multiline() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "abc\ndef\nghi".to_string();
+        // cursor_pos 5 means 5 chars in: 'a','b','c','\n','d' => on 'd', which is line 1
+        state.cursor_pos = 5;
+        assert_eq!(state.cursor_line(), 1);
+    }
+
+    #[test]
+    fn cursor_column_first_line() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "abc\ndef".to_string();
+        state.cursor_pos = 2;
+        assert_eq!(state.cursor_column(), 2);
+    }
+
+    #[test]
+    fn cursor_column_second_line() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "abc\ndef".to_string();
+        // cursor_pos 5 means 5 chars: 'a','b','c','\n','d' => col 1 on line 1
+        state.cursor_pos = 5;
+        assert_eq!(state.cursor_column(), 1);
+    }
+
+    #[test]
+    fn input_lines_splits() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "a\nb\nc".to_string();
+        assert_eq!(state.input_lines(), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn input_line_count_multiline() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "a\nb\nc".to_string();
+        assert_eq!(state.input_line_count(), 3);
+    }
+
+    #[test]
+    fn move_up_at_first_line_returns_false() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "abc\ndef".to_string();
+        state.cursor_pos = 2; // on line 0
+        assert!(!state.move_cursor_up_in_input());
+    }
+
+    #[test]
+    fn move_up_moves_cursor() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "abc\ndef".to_string();
+        // cursor_pos 5: 'a','b','c','\n','d' => col 1 on line 1
+        state.cursor_pos = 5;
+        assert!(state.move_cursor_up_in_input());
+        // Should move to col 1 on line 0 => cursor_pos 1
+        assert_eq!(state.cursor_pos, 1);
+    }
+
+    #[test]
+    fn move_down_at_last_line_returns_false() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "abc\ndef".to_string();
+        state.cursor_pos = 5; // on last line
+        assert!(!state.move_cursor_down_in_input());
+    }
+
+    #[test]
+    fn move_down_moves_cursor() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "abc\ndef".to_string();
+        // cursor_pos 1: on 'b', col 1 on line 0
+        state.cursor_pos = 1;
+        assert!(state.move_cursor_down_in_input());
+        // Should move to col 1 on line 1 => chars: 'a','b','c','\n','d' => pos 5
+        assert_eq!(state.cursor_pos, 5);
     }
 }

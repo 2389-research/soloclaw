@@ -11,6 +11,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::tui::state::TuiState;
 use crate::tui::widgets::approval::approval_line;
 use crate::tui::widgets::chat::render_chat_lines;
+use crate::tui::widgets::question::question_lines;
 use crate::tui::widgets::status::status_line;
 
 /// Render the full TUI screen layout to the given frame.
@@ -18,22 +19,43 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
     let area = frame.area();
 
     let has_approval = state.has_pending_approval();
+    let has_question = state.has_pending_question();
 
-    // Dynamic layout: insert a dedicated approval area when one is pending.
+    // Maximum height the input area can grow to (in terminal rows).
+    const MAX_INPUT_HEIGHT: u16 = 8;
+
+    // Calculate input height based on line count; fixed when not actively editing.
+    // Question mode allows typing, so treat it like normal input mode.
+    let input_height = if state.streaming || has_approval {
+        3 // fixed height when not editing
+    } else {
+        // +2 accounts for top and bottom borders
+        (state.input_line_count() as u16 + 2).max(3).min(MAX_INPUT_HEIGHT)
+    };
+
+    // Dynamic layout: insert a dedicated prompt area when approval or question is pending.
     let constraints = if has_approval {
         vec![
-            Constraint::Length(1), // Header
-            Constraint::Min(3),    // Chat area
-            Constraint::Length(3), // Approval prompt (description + options + blank)
-            Constraint::Length(3), // Input area
-            Constraint::Length(1), // Status bar
+            Constraint::Length(1),            // Header
+            Constraint::Min(3),               // Chat area
+            Constraint::Length(3),            // Approval prompt (description + options + blank)
+            Constraint::Length(input_height), // Input area
+            Constraint::Length(1),            // Status bar
+        ]
+    } else if has_question {
+        vec![
+            Constraint::Length(1),            // Header
+            Constraint::Min(3),               // Chat area
+            Constraint::Length(3),            // Question prompt (question + hint + blank)
+            Constraint::Length(input_height), // Input area (normal mode for typing)
+            Constraint::Length(1),            // Status bar
         ]
     } else {
         vec![
-            Constraint::Length(1), // Header
-            Constraint::Min(3),    // Chat area
-            Constraint::Length(3), // Input area
-            Constraint::Length(1), // Status bar
+            Constraint::Length(1),            // Header
+            Constraint::Min(3),               // Chat area
+            Constraint::Length(input_height), // Input area
+            Constraint::Length(1),            // Status bar
         ]
     };
 
@@ -74,12 +96,19 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
         chat_chunk,
     );
 
-    // Approval area (only when pending)
+    // Approval or question area (only when pending)
     let (input_chunk, status_chunk) = if has_approval {
         if let Some(ref approval) = state.pending_approval {
             let approval_lines = approval_line(&approval.description, approval.selected);
             let approval_widget = Paragraph::new(approval_lines);
             frame.render_widget(approval_widget, chunks[2]);
+        }
+        (chunks[3], chunks[4])
+    } else if has_question {
+        if let Some(ref question) = state.pending_question {
+            let q_lines = question_lines(&question.question);
+            let question_widget = Paragraph::new(q_lines);
+            frame.render_widget(question_widget, chunks[2]);
         }
         (chunks[3], chunks[4])
     } else {
@@ -102,6 +131,7 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
     } else if state.streaming {
         "(waiting for response...)".to_string()
     } else {
+        // Normal input mode and question mode both show the input buffer.
         state.input.clone()
     };
 
@@ -114,17 +144,25 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
     let input = Paragraph::new(Span::styled(input_text, input_style)).block(input_block);
     frame.render_widget(input, input_chunk);
 
-    // Set cursor position when in normal input mode
+    // Set cursor position when in normal input or question mode (multiline-aware).
     if !has_approval && !state.streaming && input_chunk.width > 0 && input_chunk.height > 1 {
         state.clamp_cursor();
 
-        let cursor_byte_index = state.cursor_byte_index();
-        let visual_col = UnicodeWidthStr::width(&state.input[..cursor_byte_index]);
+        let cursor_line = state.cursor_line();
+        let cursor_col = state.cursor_column();
+
+        // Compute the visual (display) width of the text before the cursor on its line.
+        let lines = state.input_lines();
+        let line_text = lines.get(cursor_line).unwrap_or(&"");
+        let prefix: String = line_text.chars().take(cursor_col).collect();
+        let visual_col = UnicodeWidthStr::width(prefix.as_str());
+
         let max_visual_col = input_chunk.width.saturating_sub(1) as usize;
         let clamped_visual_col = visual_col.min(max_visual_col);
 
         let cursor_x = input_chunk.x.saturating_add(clamped_visual_col as u16);
-        let cursor_y = input_chunk.y.saturating_add(1);
+        // +1 for the top border, then offset by the cursor's line index.
+        let cursor_y = input_chunk.y.saturating_add(1 + cursor_line as u16);
         frame.set_cursor_position(Position::new(cursor_x, cursor_y));
     }
 

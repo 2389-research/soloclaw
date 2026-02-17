@@ -314,6 +314,33 @@ async fn execute_tool_calls(
             _ => continue,
         };
 
+        // Intercept ask_user tool calls — bypass approval engine entirely.
+        if name == "ask_user" {
+            let question = input
+                .get("question")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(no question provided)")
+                .to_string();
+
+            let (tx, rx) = oneshot::channel();
+            let _ = agent_tx
+                .send(AgentEvent::AskUser {
+                    question,
+                    tool_call_id: id.clone(),
+                    responder: tx,
+                })
+                .await;
+
+            // Wait for user's answer (no timeout — user takes as long as they need).
+            let answer = match rx.await {
+                Ok(answer) => answer,
+                Err(_) => "[No response received]".to_string(),
+            };
+
+            results.push(ContentBlock::tool_result(id, &answer));
+            continue;
+        }
+
         let params_summary = summarize_params(input);
         let _ = agent_tx
             .send(AgentEvent::ToolCallStarted {

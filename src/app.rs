@@ -23,6 +23,7 @@ use mux::prelude::*;
 use crate::agent;
 use crate::agent::AgentLoopParams;
 use crate::approval::ApprovalEngine;
+use crate::tools::ask_user::AskUserTool;
 use crate::config::{Config, load_mcp_configs};
 use crate::prompt::{
     SystemPromptParams, build_system_prompt, load_context_files, load_skill_files,
@@ -31,7 +32,8 @@ use crate::session::SessionLogger;
 use crate::session::persistence;
 use crate::tui::input::{InputResult, handle_key};
 use crate::tui::state::{
-    AgentEvent, ChatMessageKind, PendingApproval, ToolCallStatus, TuiState, UserEvent,
+    AgentEvent, ChatMessageKind, PendingApproval, PendingQuestion, ToolCallStatus, TuiState,
+    UserEvent,
 };
 
 use crate::tui::ui::render;
@@ -67,6 +69,7 @@ impl App {
         registry.register(WriteFileTool).await;
         registry.register(ListFilesTool).await;
         registry.register(SearchTool).await;
+        registry.register(AskUserTool).await;
 
         // Connect MCP servers.
         let mcp_configs = load_mcp_configs()?;
@@ -332,6 +335,7 @@ impl App {
                     },
                     Event::Paste(text) => {
                         if !state.streaming && !state.has_pending_approval() {
+                            // Allow pasting in normal input mode and question mode.
                             state.insert_str_at_cursor(&text);
                         }
                     }
@@ -380,6 +384,11 @@ async fn handle_key_event(
             // We just need to clear the pending approval state (already done by handle_key).
             LoopAction::Continue
         }
+        InputResult::QuestionAnswered(_answer) => {
+            // The question resolution is handled inside handle_key via the oneshot channel.
+            // We just need to clear the pending question state (already done by handle_key).
+            LoopAction::Continue
+        }
         InputResult::Quit => LoopAction::Quit,
     }
 }
@@ -421,6 +430,18 @@ fn handle_agent_event(state: &mut TuiState, event: AgentEvent) -> LoopAction {
                 pattern,
                 tool_name,
                 selected: 0,
+                responder: Some(responder),
+            });
+            state.scroll_offset = 0;
+        }
+        AgentEvent::AskUser {
+            question,
+            tool_call_id,
+            responder,
+        } => {
+            state.pending_question = Some(PendingQuestion {
+                question,
+                tool_call_id,
                 responder: Some(responder),
             });
             state.scroll_offset = 0;
@@ -659,5 +680,43 @@ mod tests {
             }
             _ => panic!("expected ToolCall"),
         }
+    }
+
+    #[test]
+    fn handle_agent_ask_user_sets_pending_question() {
+        let mut state = TuiState::new("test-model".to_string(), 3);
+        state.scroll_offset = 5;
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        handle_agent_event(
+            &mut state,
+            AgentEvent::AskUser {
+                question: "What is your name?".to_string(),
+                tool_call_id: "call-42".to_string(),
+                responder: tx,
+            },
+        );
+        assert!(state.has_pending_question());
+        let q = state.pending_question.as_ref().unwrap();
+        assert_eq!(q.question, "What is your name?");
+        assert_eq!(q.tool_call_id, "call-42");
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn handle_agent_ask_user_responder_is_set() {
+        let mut state = TuiState::new("test-model".to_string(), 3);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_agent_event(
+            &mut state,
+            AgentEvent::AskUser {
+                question: "pick a color".to_string(),
+                tool_call_id: "call-99".to_string(),
+                responder: tx,
+            },
+        );
+        // Verify the responder is present and can send
+        let q = state.pending_question.take().unwrap();
+        q.responder.unwrap().send("blue".to_string()).unwrap();
+        assert_eq!(rx.blocking_recv().unwrap(), "blue");
     }
 }

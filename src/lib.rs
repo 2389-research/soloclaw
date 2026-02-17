@@ -7,4 +7,5 @@ pub mod approval;
 pub mod config;
 pub mod prompt;
 pub mod session;
+pub mod tools;
 pub mod tui;
