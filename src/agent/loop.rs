@@ -20,11 +20,6 @@ struct PendingToolCall {
     json_buf: String,
 }
 
-/// System prompt for the agent.
-const SYSTEM_PROMPT: &str = "You are a helpful coding assistant running inside a terminal. \
-    You have access to tools for running commands, reading/writing files, and searching. \
-    Be concise and direct.";
-
 /// Run the agent loop, processing user messages and streaming LLM responses.
 ///
 /// This function runs until the user sends a Quit event or the channel closes.
@@ -37,6 +32,7 @@ pub async fn run_agent_loop(
     engine: Arc<ApprovalEngine>,
     model: String,
     max_tokens: u32,
+    system_prompt: String,
     mut user_rx: mpsc::Receiver<UserEvent>,
     agent_tx: mpsc::Sender<AgentEvent>,
 ) {
@@ -62,6 +58,7 @@ pub async fn run_agent_loop(
                     &engine,
                     &model,
                     max_tokens,
+                    &system_prompt,
                     &mut messages,
                     &agent_tx,
                 )
@@ -84,6 +81,7 @@ async fn conversation_turn(
     engine: &Arc<ApprovalEngine>,
     model: &str,
     max_tokens: u32,
+    system_prompt: &str,
     messages: &mut Vec<Message>,
     agent_tx: &mpsc::Sender<AgentEvent>,
 ) -> anyhow::Result<()> {
@@ -91,7 +89,7 @@ async fn conversation_turn(
         let tool_defs = registry.to_definitions().await;
 
         let request = Request::new(model)
-            .system(SYSTEM_PROMPT)
+            .system(system_prompt)
             .max_tokens(max_tokens)
             .messages(messages.iter().cloned())
             .tools(tool_defs);

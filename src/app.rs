@@ -18,6 +18,7 @@ use mux::prelude::*;
 
 use crate::agent;
 use crate::approval::ApprovalEngine;
+use crate::prompt::SystemPromptBuilder;
 use crate::config::{load_mcp_configs, Config};
 use crate::tui::input::{handle_key, InputResult};
 use crate::tui::state::{
@@ -87,6 +88,13 @@ impl App {
         let max_tokens = self.config.llm.max_tokens;
         let tool_count = registry.count().await;
 
+        // Build the system prompt from layered defaults + overrides.
+        let system_prompt = {
+            let mut builder = SystemPromptBuilder::new();
+            builder.load_overrides().load_local();
+            builder.build()
+        };
+
         // Spawn the agent loop in a background task.
         let agent_handle = tokio::spawn(agent::run_agent_loop(
             client,
@@ -94,6 +102,7 @@ impl App {
             engine,
             model.clone(),
             max_tokens,
+            system_prompt,
             user_rx,
             agent_tx,
         ));
