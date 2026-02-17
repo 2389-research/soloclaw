@@ -6,4 +6,5 @@ pub mod app;
 pub mod approval;
 pub mod config;
 pub mod prompt;
+pub mod session;
 pub mod tui;

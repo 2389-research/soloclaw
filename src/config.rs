@@ -233,6 +233,25 @@ impl Config {
         Self::config_dir().join("secrets.env")
     }
 
+    /// Path to the XDG data directory for soloclaw.
+    pub fn data_dir() -> PathBuf {
+        if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
+            return PathBuf::from(xdg_data).join(APP_NAME);
+        }
+        if let Some(base) = dirs::data_dir() {
+            return base.join(APP_NAME);
+        }
+        if let Some(home) = dirs::home_dir() {
+            return home.join(".local").join("share").join(APP_NAME);
+        }
+        PathBuf::from(".").join(APP_NAME)
+    }
+
+    /// Path to the sessions directory inside the data directory.
+    pub fn sessions_dir() -> PathBuf {
+        Self::data_dir().join("sessions")
+    }
+
     fn resolved_config_path() -> PathBuf {
         let xdg = Self::config_path();
         if xdg.exists() {
@@ -548,6 +567,30 @@ max_files = 5
         assert!(config.skills.include_xdg_config);
         assert!(!config.skills.include_workspace);
         assert_eq!(config.skills.max_files, 5);
+    }
+
+    #[test]
+    fn sessions_dir_is_subpath_of_data_dir() {
+        let data_dir = Config::data_dir();
+        let sessions_dir = Config::sessions_dir();
+        assert!(
+            sessions_dir.starts_with(&data_dir),
+            "sessions_dir {:?} should start with data_dir {:?}",
+            sessions_dir,
+            data_dir
+        );
+        assert_eq!(sessions_dir, data_dir.join("sessions"));
+    }
+
+    #[test]
+    fn data_dir_contains_app_name() {
+        let data_dir = Config::data_dir();
+        let dir_str = data_dir.to_string_lossy();
+        assert!(
+            dir_str.contains("soloclaw"),
+            "data_dir {:?} should contain 'soloclaw'",
+            data_dir
+        );
     }
 
     #[test]

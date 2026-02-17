@@ -6,11 +6,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 use mux::prelude::*;
 
 use crate::approval::{ApprovalDecision, ApprovalEngine, EngineOutcome, ToolCallInfo};
+use crate::session::SessionLogger;
 use crate::tui::state::{AgentEvent, UserEvent};
 
 /// Metadata tracked for a tool call being assembled from streaming events.
@@ -20,6 +21,29 @@ struct PendingToolCall {
     json_buf: String,
 }
 
+/// Bundled parameters for the agent loop, replacing individual function arguments.
+pub struct AgentLoopParams {
+    pub client: Arc<dyn LlmClient>,
+    pub registry: Registry,
+    pub engine: Arc<ApprovalEngine>,
+    pub model: String,
+    pub max_tokens: u32,
+    pub approval_timeout_seconds: u64,
+    pub system_prompt: String,
+    pub initial_messages: Vec<Message>,
+    pub session_logger: Option<Arc<Mutex<SessionLogger>>>,
+}
+
+/// Log a message via the session logger, if one is configured.
+async fn maybe_log_message(logger: &Option<Arc<Mutex<SessionLogger>>>, msg: &Message) {
+    if let Some(logger) = logger {
+        let mut guard = logger.lock().await;
+        if let Err(e) = guard.log_message(msg) {
+            eprintln!("Warning: failed to log session message: {}", e);
+        }
+    }
+}
+
 /// Run the agent loop, processing user messages and streaming LLM responses.
 ///
 /// This function runs until the user sends a Quit event or the channel closes.
@@ -27,17 +51,11 @@ struct PendingToolCall {
 /// tool calls through the approval engine, and loops back to the LLM when
 /// tool results are available.
 pub async fn run_agent_loop(
-    client: Arc<dyn LlmClient>,
-    registry: Registry,
-    engine: Arc<ApprovalEngine>,
-    model: String,
-    max_tokens: u32,
-    approval_timeout_seconds: u64,
-    system_prompt: String,
+    params: AgentLoopParams,
     mut user_rx: mpsc::Receiver<UserEvent>,
     agent_tx: mpsc::Sender<AgentEvent>,
 ) {
-    let mut messages: Vec<Message> = Vec::new();
+    let mut messages: Vec<Message> = params.initial_messages;
 
     loop {
         // Wait for a user event.
@@ -49,20 +67,23 @@ pub async fn run_agent_loop(
         match event {
             UserEvent::Quit => break,
             UserEvent::Message(text) => {
-                messages.push(Message::user(&text));
+                let user_msg = Message::user(&text);
+                maybe_log_message(&params.session_logger, &user_msg).await;
+                messages.push(user_msg);
 
                 // Enter the LLM conversation loop. After each round of tool calls,
                 // we re-send the updated conversation to the LLM.
                 if let Err(e) = conversation_turn(
-                    &client,
-                    &registry,
-                    &engine,
-                    &model,
-                    max_tokens,
-                    approval_timeout_seconds,
-                    &system_prompt,
+                    &params.client,
+                    &params.registry,
+                    &params.engine,
+                    &params.model,
+                    params.max_tokens,
+                    params.approval_timeout_seconds,
+                    &params.system_prompt,
                     &mut messages,
                     &agent_tx,
+                    &params.session_logger,
                 )
                 .await
                 {
@@ -87,6 +108,7 @@ async fn conversation_turn(
     system_prompt: &str,
     messages: &mut Vec<Message>,
     agent_tx: &mpsc::Sender<AgentEvent>,
+    session_logger: &Option<Arc<Mutex<SessionLogger>>>,
 ) -> anyhow::Result<()> {
     loop {
         let tool_defs = registry.to_definitions().await;
@@ -101,10 +123,12 @@ async fn conversation_turn(
 
         // Record the assistant's response in conversation history.
         if !assistant_blocks.is_empty() {
-            messages.push(Message {
+            let assistant_msg = Message {
                 role: Role::Assistant,
                 content: assistant_blocks.clone(),
-            });
+            };
+            maybe_log_message(session_logger, &assistant_msg).await;
+            messages.push(assistant_msg);
         }
 
         // If the LLM stopped because of tool use, execute tools and continue.
@@ -119,7 +143,9 @@ async fn conversation_turn(
             .await;
 
             if !tool_results.is_empty() {
-                messages.push(Message::tool_results(tool_results));
+                let tool_msg = Message::tool_results(tool_results);
+                maybe_log_message(session_logger, &tool_msg).await;
+                messages.push(tool_msg);
             }
 
             // Loop back to send updated conversation to LLM.
@@ -477,6 +503,25 @@ mod tests {
                 assert!(is_error);
             }
             _ => panic!("expected ToolResult block"),
+        }
+    }
+
+    #[test]
+    fn agent_loop_params_is_constructible() {
+        // Compile-time test: verify AgentLoopParams struct can be referenced
+        // and its fields are accessible. We can't construct a full instance
+        // without a real LlmClient, but we verify the type exists and field
+        // names are correct.
+        fn _check_fields(p: &AgentLoopParams) {
+            let _: &Arc<dyn LlmClient> = &p.client;
+            let _: &Registry = &p.registry;
+            let _: &Arc<ApprovalEngine> = &p.engine;
+            let _: &String = &p.model;
+            let _: &u32 = &p.max_tokens;
+            let _: &u64 = &p.approval_timeout_seconds;
+            let _: &String = &p.system_prompt;
+            let _: &Vec<Message> = &p.initial_messages;
+            let _: &Option<Arc<Mutex<SessionLogger>>> = &p.session_logger;
         }
     }
 }

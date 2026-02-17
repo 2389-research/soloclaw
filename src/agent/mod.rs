@@ -4,5 +4,5 @@
 pub mod r#loop;
 pub mod provider;
 
-pub use r#loop::run_agent_loop;
+pub use r#loop::{AgentLoopParams, run_agent_loop};
 pub use provider::*;

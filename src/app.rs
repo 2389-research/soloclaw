@@ -2,6 +2,7 @@
 // ABOUTME: Handles terminal setup/teardown, MCP connections, and the main event loop.
 
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,16 +15,18 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 use mux::prelude::*;
 
 use crate::agent;
+use crate::agent::AgentLoopParams;
 use crate::approval::ApprovalEngine;
 use crate::config::{Config, load_mcp_configs};
 use crate::prompt::{
     SystemPromptParams, build_system_prompt, load_context_files, load_skill_files,
 };
+use crate::session::SessionLogger;
 use crate::tui::input::{InputResult, handle_key};
 use crate::tui::state::{
     AgentEvent, ChatMessageKind, PendingApproval, ToolCallStatus, TuiState, UserEvent,
@@ -101,9 +104,8 @@ impl App {
         let tool_count = registry.count().await;
 
         // Gather runtime info and build the system prompt.
-        let workspace_dir = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".to_string());
+        let workspace_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let workspace_dir = workspace_path.to_string_lossy().to_string();
 
         let context_files = load_context_files(&workspace_dir);
         let skill_files = load_skill_files(&workspace_dir, &self.config.skills);
@@ -134,15 +136,28 @@ impl App {
             skill_files,
         });
 
+        // Create session logger for conversation persistence.
+        let session_logger = match SessionLogger::new(&workspace_path) {
+            Ok(logger) => Some(Arc::new(Mutex::new(logger))),
+            Err(e) => {
+                eprintln!("Warning: failed to create session logger: {}", e);
+                None
+            }
+        };
+
         // Spawn the agent loop in a background task.
         let agent_handle = tokio::spawn(agent::run_agent_loop(
-            client,
-            registry,
-            engine,
-            model.clone(),
-            max_tokens,
-            approval_timeout_seconds,
-            system_prompt,
+            AgentLoopParams {
+                client,
+                registry,
+                engine,
+                model: model.clone(),
+                max_tokens,
+                approval_timeout_seconds,
+                system_prompt,
+                initial_messages: Vec::new(),
+                session_logger,
+            },
             user_rx,
             agent_tx,
         ));
