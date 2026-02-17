@@ -14,6 +14,8 @@ pub enum InputResult {
     None,
     /// User submitted a message.
     Send(String),
+    /// User queued a message while streaming.
+    Queue(String),
     /// User made an approval decision.
     Approval(ApprovalDecision),
     /// User answered a question from the LLM.
@@ -59,9 +61,23 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> InputResult {
         return handle_question_key(state, key);
     }
 
-    // If streaming, ignore all input
+    // During streaming, allow typing and queueing messages.
     if state.streaming {
-        return InputResult::None;
+        return match key.code {
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                state.insert_char_at_cursor('\n');
+                InputResult::None
+            }
+            KeyCode::Enter => {
+                if let Some(text) = state.submit_input() {
+                    InputResult::Queue(text)
+                } else {
+                    InputResult::None
+                }
+            }
+            KeyCode::Esc => InputResult::None, // Don't quit during streaming
+            _ => handle_text_editing_key(state, key.code),
+        };
     }
 
     // Context-aware Up/Down in normal input mode: move cursor within multiline
@@ -284,12 +300,52 @@ mod tests {
     }
 
     #[test]
-    fn streaming_ignores_input() {
+    fn streaming_allows_typing() {
         let mut state = TuiState::new("m".to_string(), 0);
         state.streaming = true;
         let result = handle_key(&mut state, make_key(KeyCode::Char('x')));
         assert_eq!(result, InputResult::None);
+        assert_eq!(state.input, "x");
+        assert_eq!(state.cursor_pos, 1);
+    }
+
+    #[test]
+    fn streaming_enter_queues_message() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.streaming = true;
+        state.input = "next question".to_string();
+        state.cursor_pos = 13;
+        let result = handle_key(&mut state, make_key(KeyCode::Enter));
+        assert_eq!(result, InputResult::Queue("next question".to_string()));
         assert_eq!(state.input, "");
+        assert_eq!(state.cursor_pos, 0);
+    }
+
+    #[test]
+    fn streaming_empty_enter_does_nothing() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.streaming = true;
+        let result = handle_key(&mut state, make_key(KeyCode::Enter));
+        assert_eq!(result, InputResult::None);
+    }
+
+    #[test]
+    fn streaming_esc_does_not_quit() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.streaming = true;
+        let result = handle_key(&mut state, make_key(KeyCode::Esc));
+        assert_eq!(result, InputResult::None);
+    }
+
+    #[test]
+    fn streaming_shift_enter_inserts_newline() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.streaming = true;
+        state.input = "line1".to_string();
+        state.cursor_pos = 5;
+        let result = handle_key(&mut state, make_shift_key(KeyCode::Enter));
+        assert_eq!(result, InputResult::None);
+        assert_eq!(state.input, "line1\n");
     }
 
     #[test]

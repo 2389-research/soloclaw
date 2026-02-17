@@ -326,6 +326,11 @@ impl App {
                     Event::Key(key) => match handle_key_event(state, key, user_tx).await {
                         LoopAction::Continue => {}
                         LoopAction::Quit => break,
+                        LoopAction::SendQueued(text) => {
+                            state.push_message(ChatMessageKind::User, text.clone());
+                            state.streaming = true;
+                            let _ = user_tx.send(UserEvent::Message(text)).await;
+                        }
                     },
                     Event::Mouse(mouse) => match mouse.kind {
                         MouseEventKind::ScrollUp => {
@@ -339,8 +344,8 @@ impl App {
                         _ => {}
                     },
                     Event::Paste(text) => {
-                        if !state.streaming && !state.has_pending_approval() {
-                            // Allow pasting in normal input mode and question mode.
+                        if !state.has_pending_approval() {
+                            // Allow pasting in normal input, question mode, and streaming.
                             state.insert_str_at_cursor(&text);
                         }
                     }
@@ -349,6 +354,7 @@ impl App {
             }
 
             // Drain a bounded number of pending agent events so user input stays responsive.
+            let mut queued_send: Option<String> = None;
             for _ in 0..MAX_AGENT_EVENTS_PER_TICK {
                 let Ok(event) = agent_rx.try_recv() else {
                     break;
@@ -356,7 +362,17 @@ impl App {
                 match handle_agent_event(state, event) {
                     LoopAction::Continue => {}
                     LoopAction::Quit => break,
+                    LoopAction::SendQueued(text) => {
+                        queued_send = Some(text);
+                        break;
+                    }
                 }
+            }
+            // Auto-send any queued message after the drain loop completes.
+            if let Some(text) = queued_send {
+                state.push_message(ChatMessageKind::User, text.clone());
+                state.streaming = true;
+                let _ = user_tx.send(UserEvent::Message(text)).await;
             }
         }
 
@@ -368,6 +384,8 @@ impl App {
 enum LoopAction {
     Continue,
     Quit,
+    /// Auto-send a queued message that was typed during streaming.
+    SendQueued(String),
 }
 
 /// Process a keyboard event and potentially send a message to the agent.
@@ -382,6 +400,10 @@ async fn handle_key_event(
             state.push_message(ChatMessageKind::User, text.clone());
             state.streaming = true;
             let _ = user_tx.send(UserEvent::Message(text)).await;
+            LoopAction::Continue
+        }
+        InputResult::Queue(text) => {
+            state.queued_message = Some(text);
             LoopAction::Continue
         }
         InputResult::Approval(_decision) => {
@@ -478,6 +500,10 @@ fn handle_agent_event(state: &mut TuiState, event: AgentEvent) -> LoopAction {
         }
         AgentEvent::Done => {
             state.streaming = false;
+            // Auto-send any queued message from the user.
+            if let Some(queued) = state.queued_message.take() {
+                return LoopAction::SendQueued(queued);
+            }
         }
         AgentEvent::CompactionStarted => {
             state.push_message(
@@ -742,6 +768,29 @@ mod tests {
         let q = state.pending_question.take().unwrap();
         q.responder.unwrap().send("blue".to_string()).unwrap();
         assert_eq!(rx.blocking_recv().unwrap(), "blue");
+    }
+
+    #[test]
+    fn handle_agent_done_sends_queued_message() {
+        let mut state = TuiState::new("test-model".to_string(), 3);
+        state.streaming = true;
+        state.queued_message = Some("follow up".to_string());
+        let action = handle_agent_event(&mut state, AgentEvent::Done);
+        assert!(!state.streaming);
+        assert!(state.queued_message.is_none());
+        match action {
+            LoopAction::SendQueued(text) => assert_eq!(text, "follow up"),
+            _ => panic!("expected SendQueued"),
+        }
+    }
+
+    #[test]
+    fn handle_agent_done_no_queue_continues() {
+        let mut state = TuiState::new("test-model".to_string(), 3);
+        state.streaming = true;
+        let action = handle_agent_event(&mut state, AgentEvent::Done);
+        assert!(!state.streaming);
+        assert!(matches!(action, LoopAction::Continue));
     }
 
     #[test]

@@ -24,10 +24,10 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
     // Maximum height the input area can grow to (in terminal rows).
     const MAX_INPUT_HEIGHT: u16 = 8;
 
-    // Calculate input height based on line count; fixed when not actively editing.
-    // Question mode allows typing, so treat it like normal input mode.
-    let input_height = if state.streaming || has_approval {
-        3 // fixed height when not editing
+    // Calculate input height based on line count; fixed when approval is pending.
+    // Streaming mode now allows typing, so it uses dynamic height too.
+    let input_height = if has_approval {
+        3 // fixed height when approval pending
     } else {
         // +2 accounts for top and bottom borders
         (state.input_line_count() as u16 + 2).clamp(3, MAX_INPUT_HEIGHT)
@@ -118,20 +118,31 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
         Style::default()
     };
 
-    let input_block = Block::default()
+    let mut input_block = Block::default()
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(input_block_style);
 
+    // Show streaming/queued indicator in the input border title.
+    if state.streaming {
+        let title = if state.queued_message.is_some() {
+            " message queued "
+        } else {
+            " streaming... "
+        };
+        input_block = input_block.title(Span::styled(
+            title,
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
     let input_text = if has_approval {
         "(approve/deny the tool call above)".to_string()
-    } else if state.streaming {
-        "(waiting for response...)".to_string()
     } else {
-        // Normal input mode and question mode both show the input buffer.
+        // Normal input, question mode, and streaming all show the input buffer.
         state.input.clone()
     };
 
-    let input_style = if has_approval || state.streaming {
+    let input_style = if has_approval {
         Style::default().fg(Color::DarkGray)
     } else {
         Style::default()
@@ -140,8 +151,8 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
     let input = Paragraph::new(Span::styled(input_text, input_style)).block(input_block);
     frame.render_widget(input, input_chunk);
 
-    // Set cursor position when in normal input or question mode (multiline-aware).
-    if !has_approval && !state.streaming && input_chunk.width > 0 && input_chunk.height > 1 {
+    // Set cursor position when editing: normal input, question mode, or streaming.
+    if !has_approval && input_chunk.width > 0 && input_chunk.height > 1 {
         state.clamp_cursor();
 
         let cursor_line = state.cursor_line();

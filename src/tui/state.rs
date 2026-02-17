@@ -128,6 +128,7 @@ pub struct TuiState {
     pub context_used: u64,
     pub session_start: std::time::Instant,
     pub workspace_dir: String,
+    pub queued_message: Option<String>,
 }
 
 impl TuiState {
@@ -148,6 +149,7 @@ impl TuiState {
             context_used: 0,
             session_start: std::time::Instant::now(),
             workspace_dir: String::new(),
+            queued_message: None,
         }
     }
 
