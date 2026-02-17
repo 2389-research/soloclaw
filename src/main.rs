@@ -2,6 +2,7 @@
 // ABOUTME: Parses CLI args, loads config, and launches the app.
 
 mod approval;
+mod config;
 
 fn main() {
     println!("simpleclaw");
