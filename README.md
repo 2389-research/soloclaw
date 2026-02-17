@@ -45,10 +45,10 @@ A terminal AI agent with layered tool approval — built in Rust.
 cargo install --path .
 
 # 2. Run interactive setup (writes config, API keys, approvals)
-claw setup
+soloclaw setup
 
 # 3. Launch
-claw
+soloclaw
 ```
 
 ## Usage
@@ -56,11 +56,11 @@ claw
 ### CLI
 
 ```
-claw                              # launch with config defaults
-claw setup                        # interactive first-run setup
-claw --provider openai            # override provider
-claw --model claude-opus-4-6      # override model
-claw --security full              # trust all tools (no approval prompts)
+soloclaw                             # launch with config defaults
+soloclaw setup                        # interactive first-run setup
+soloclaw --provider openai            # override provider
+soloclaw --model claude-opus-4-6      # override model
+soloclaw --security full              # trust all tools (no approval prompts)
 ```
 
 Flags override values from `config.toml` for that session.
@@ -81,7 +81,7 @@ Flags override values from `config.toml` for that session.
 
 ## Configuration
 
-All config lives under `$XDG_CONFIG_HOME/soloclaw/` (typically `~/.config/soloclaw/`). Run `claw setup` to generate defaults.
+All config lives under `$XDG_CONFIG_HOME/soloclaw/` (typically `~/.config/soloclaw/`). Run `soloclaw setup` to generate defaults.
 
 ### config.toml
 
@@ -128,7 +128,7 @@ max_total_chars = 32000       # total budget across all skills
 
 ### secrets.env
 
-API keys are stored in `secrets.env` (chmod 600). The `claw setup` wizard prompts for these:
+API keys are stored in `secrets.env` (chmod 600). The `soloclaw setup` wizard prompts for these:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...

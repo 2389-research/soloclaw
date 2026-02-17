@@ -341,7 +341,7 @@ pub fn run_setup() -> anyhow::Result<()> {
 
     println!("Wrote {}", secrets_path.display());
     println!("Setup complete.");
-    println!("Run: claw");
+    println!("Run: soloclaw");
 
     Ok(())
 }
