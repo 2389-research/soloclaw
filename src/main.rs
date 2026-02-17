@@ -4,6 +4,7 @@
 mod agent;
 mod approval;
 mod config;
+mod tui;
 
 fn main() {
     println!("simpleclaw");
