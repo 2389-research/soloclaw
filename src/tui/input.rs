@@ -169,6 +169,16 @@ fn handle_approval_key(state: &mut TuiState, key: KeyEvent) -> InputResult {
 
 /// Handle key events while a question prompt is active.
 fn handle_question_key(state: &mut TuiState, key: KeyEvent) -> InputResult {
+    let has_options = state
+        .pending_question
+        .as_ref()
+        .map_or(false, |q| !q.options.is_empty());
+
+    if has_options {
+        return handle_multiple_choice_key(state, key);
+    }
+
+    // Free-text question mode: type answer and press Enter.
     match key.code {
         KeyCode::Enter => {
             let text = state.input.clone();
@@ -182,6 +192,60 @@ fn handle_question_key(state: &mut TuiState, key: KeyEvent) -> InputResult {
             resolve_question(state, "[User declined to answer]".to_string())
         }
         _ => handle_text_editing_key(state, key.code),
+    }
+}
+
+/// Handle key events for multiple-choice question mode.
+fn handle_multiple_choice_key(state: &mut TuiState, key: KeyEvent) -> InputResult {
+    match key.code {
+        KeyCode::Left => {
+            if let Some(ref mut q) = state.pending_question {
+                q.selected = q.selected.saturating_sub(1);
+            }
+            InputResult::None
+        }
+        KeyCode::Right => {
+            if let Some(ref mut q) = state.pending_question {
+                let max = q.options.len().saturating_sub(1);
+                if q.selected < max {
+                    q.selected += 1;
+                }
+            }
+            InputResult::None
+        }
+        KeyCode::Enter => {
+            let answer = state
+                .pending_question
+                .as_ref()
+                .and_then(|q| q.options.get(q.selected).cloned())
+                .unwrap_or_default();
+            resolve_question(state, answer)
+        }
+        // Number keys for direct selection (1-indexed).
+        KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+            let idx = (c as usize) - ('1' as usize);
+            let option_count = state
+                .pending_question
+                .as_ref()
+                .map_or(0, |q| q.options.len());
+            if idx < option_count {
+                if let Some(ref mut q) = state.pending_question {
+                    q.selected = idx;
+                }
+                let answer = state
+                    .pending_question
+                    .as_ref()
+                    .and_then(|q| q.options.get(q.selected).cloned())
+                    .unwrap_or_default();
+                resolve_question(state, answer)
+            } else {
+                InputResult::None
+            }
+        }
+        KeyCode::Esc => {
+            resolve_question(state, "[User declined to answer]".to_string())
+        }
+        _ => InputResult::None,
     }
 }
 
@@ -465,6 +529,21 @@ mod tests {
         state.pending_question = Some(PendingQuestion {
             question: "What is your name?".to_string(),
             tool_call_id: "call-1".to_string(),
+            options: vec![],
+            selected: 0,
+            responder: Some(tx),
+        });
+        (state, rx)
+    }
+
+    fn make_multichoice_state(options: Vec<&str>) -> (TuiState, oneshot::Receiver<String>) {
+        let mut state = TuiState::new("m".to_string(), 0);
+        let (tx, rx) = oneshot::channel();
+        state.pending_question = Some(PendingQuestion {
+            question: "Pick a color".to_string(),
+            tool_call_id: "call-mc".to_string(),
+            options: options.into_iter().map(|s| s.to_string()).collect(),
+            selected: 0,
             responder: Some(tx),
         });
         (state, rx)
@@ -596,5 +675,75 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         let result = handle_key(&mut state, key);
         assert_eq!(result, InputResult::Quit);
+    }
+
+    // --- Multiple choice question tests ---
+
+    #[test]
+    fn multichoice_enter_selects_first_option() {
+        let (mut state, rx) = make_multichoice_state(vec!["red", "green", "blue"]);
+        let result = handle_key(&mut state, make_key(KeyCode::Enter));
+        assert_eq!(result, InputResult::QuestionAnswered("red".to_string()));
+        assert_eq!(rx.blocking_recv().unwrap(), "red");
+    }
+
+    #[test]
+    fn multichoice_right_then_enter_selects_second() {
+        let (mut state, rx) = make_multichoice_state(vec!["red", "green", "blue"]);
+        handle_key(&mut state, make_key(KeyCode::Right));
+        let result = handle_key(&mut state, make_key(KeyCode::Enter));
+        assert_eq!(result, InputResult::QuestionAnswered("green".to_string()));
+        assert_eq!(rx.blocking_recv().unwrap(), "green");
+    }
+
+    #[test]
+    fn multichoice_left_clamps_at_zero() {
+        let (mut state, _rx) = make_multichoice_state(vec!["red", "green"]);
+        handle_key(&mut state, make_key(KeyCode::Left));
+        assert_eq!(state.pending_question.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn multichoice_right_clamps_at_last() {
+        let (mut state, _rx) = make_multichoice_state(vec!["red", "green"]);
+        handle_key(&mut state, make_key(KeyCode::Right));
+        handle_key(&mut state, make_key(KeyCode::Right));
+        handle_key(&mut state, make_key(KeyCode::Right));
+        assert_eq!(state.pending_question.as_ref().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn multichoice_number_key_selects_directly() {
+        let (mut state, rx) = make_multichoice_state(vec!["red", "green", "blue"]);
+        let result = handle_key(&mut state, make_key(KeyCode::Char('2')));
+        assert_eq!(result, InputResult::QuestionAnswered("green".to_string()));
+        assert_eq!(rx.blocking_recv().unwrap(), "green");
+    }
+
+    #[test]
+    fn multichoice_number_key_out_of_range_ignored() {
+        let (mut state, _rx) = make_multichoice_state(vec!["red", "green"]);
+        let result = handle_key(&mut state, make_key(KeyCode::Char('5')));
+        assert_eq!(result, InputResult::None);
+        assert!(state.has_pending_question());
+    }
+
+    #[test]
+    fn multichoice_esc_declines() {
+        let (mut state, rx) = make_multichoice_state(vec!["red", "green"]);
+        let result = handle_key(&mut state, make_key(KeyCode::Esc));
+        assert_eq!(
+            result,
+            InputResult::QuestionAnswered("[User declined to answer]".to_string())
+        );
+        assert_eq!(rx.blocking_recv().unwrap(), "[User declined to answer]");
+    }
+
+    #[test]
+    fn multichoice_typing_ignored() {
+        let (mut state, _rx) = make_multichoice_state(vec!["red", "green"]);
+        let result = handle_key(&mut state, make_key(KeyCode::Char('x')));
+        assert_eq!(result, InputResult::None);
+        assert_eq!(state.input, ""); // typing doesn't go to input buffer
     }
 }

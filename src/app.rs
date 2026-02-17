@@ -464,11 +464,14 @@ fn handle_agent_event(state: &mut TuiState, event: AgentEvent) -> LoopAction {
         AgentEvent::AskUser {
             question,
             tool_call_id,
+            options,
             responder,
         } => {
             state.pending_question = Some(PendingQuestion {
                 question,
                 tool_call_id,
+                options,
+                selected: 0,
                 responder: Some(responder),
             });
             state.scroll_offset = 0;
@@ -742,6 +745,7 @@ mod tests {
             AgentEvent::AskUser {
                 question: "What is your name?".to_string(),
                 tool_call_id: "call-42".to_string(),
+                options: vec![],
                 responder: tx,
             },
         );
@@ -753,6 +757,26 @@ mod tests {
     }
 
     #[test]
+    fn handle_agent_ask_user_with_options() {
+        let mut state = TuiState::new("test-model".to_string(), 3);
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        handle_agent_event(
+            &mut state,
+            AgentEvent::AskUser {
+                question: "Pick a color".to_string(),
+                tool_call_id: "call-mc".to_string(),
+                options: vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+                responder: tx,
+            },
+        );
+        assert!(state.has_pending_question());
+        let q = state.pending_question.as_ref().unwrap();
+        assert_eq!(q.options.len(), 3);
+        assert_eq!(q.options[0], "red");
+        assert_eq!(q.selected, 0);
+    }
+
+    #[test]
     fn handle_agent_ask_user_responder_is_set() {
         let mut state = TuiState::new("test-model".to_string(), 3);
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -761,6 +785,7 @@ mod tests {
             AgentEvent::AskUser {
                 question: "pick a color".to_string(),
                 tool_call_id: "call-99".to_string(),
+                options: vec![],
                 responder: tx,
             },
         );

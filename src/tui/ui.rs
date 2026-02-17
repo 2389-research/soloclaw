@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::tui::state::TuiState;
 use crate::tui::widgets::approval::approval_line;
 use crate::tui::widgets::chat::render_chat_lines;
-use crate::tui::widgets::question::question_lines;
+use crate::tui::widgets::question::{multichoice_lines, question_lines};
 use crate::tui::widgets::status::{StatusBarParams, status_line};
 
 /// Render the full TUI screen layout to the given frame.
@@ -33,14 +33,27 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
         (state.input_line_count() as u16 + 2).clamp(3, MAX_INPUT_HEIGHT)
     };
 
+    // Compute prompt area height: approval/question prompt or multichoice needs more rows.
+    let prompt_height = if has_approval {
+        3
+    } else if has_question {
+        let has_options = state
+            .pending_question
+            .as_ref()
+            .map_or(false, |q| !q.options.is_empty());
+        if has_options { 4 } else { 3 }
+    } else {
+        0
+    };
+
     // Dynamic layout: insert a dedicated prompt area when approval or question is pending.
     let constraints = if has_approval || has_question {
         vec![
-            Constraint::Length(1),            // Header
-            Constraint::Min(3),               // Chat area
-            Constraint::Length(3),            // Approval/question prompt area
-            Constraint::Length(input_height), // Input area
-            Constraint::Length(1),            // Status bar
+            Constraint::Length(1),                   // Header
+            Constraint::Min(3),                      // Chat area
+            Constraint::Length(prompt_height as u16), // Approval/question prompt area
+            Constraint::Length(input_height),         // Input area
+            Constraint::Length(1),                    // Status bar
         ]
     } else {
         vec![
@@ -102,7 +115,11 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
         (chunks[3], chunks[4])
     } else if has_question {
         if let Some(ref question) = state.pending_question {
-            let q_lines = question_lines(&question.question);
+            let q_lines = if question.options.is_empty() {
+                question_lines(&question.question)
+            } else {
+                multichoice_lines(&question.question, &question.options, question.selected)
+            };
             let question_widget = Paragraph::new(q_lines);
             frame.render_widget(question_widget, chunks[2]);
         }

@@ -17,7 +17,7 @@ impl Tool for AskUserTool {
     }
 
     fn description(&self) -> &str {
-        "Ask the user a question and get their free-text response. Use when you need clarification or input from the user."
+        "Ask the user a question. Prefer providing multiple-choice options when possible. Use free-text only when the answer is truly open-ended."
     }
 
     fn schema(&self) -> serde_json::Value {
@@ -27,6 +27,11 @@ impl Tool for AskUserTool {
                 "question": {
                     "type": "string",
                     "description": "The question to ask the user"
+                },
+                "options": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Multiple-choice options for the user to select from. Preferred over free-text when the answer is one of a known set."
                 }
             },
             "required": ["question"]
@@ -72,12 +77,23 @@ mod tests {
     }
 
     #[test]
+    fn schema_has_options_property() {
+        let tool = AskUserTool;
+        let schema = tool.schema();
+        let props = schema.get("properties").expect("should have properties");
+        let options = props.get("options").expect("should have options property");
+        assert_eq!(options.get("type").unwrap(), "array");
+    }
+
+    #[test]
     fn schema_requires_question() {
         let tool = AskUserTool;
         let schema = tool.schema();
         let required = schema.get("required").expect("should have required");
         let required_arr = required.as_array().unwrap();
         assert!(required_arr.iter().any(|v| v == "question"));
+        // options is NOT required
+        assert!(!required_arr.iter().any(|v| v == "options"));
     }
 
     #[test]

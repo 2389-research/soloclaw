@@ -60,6 +60,8 @@ pub enum AgentEvent {
     AskUser {
         question: String,
         tool_call_id: String,
+        /// Multiple-choice options. Empty means free-text mode.
+        options: Vec<String>,
         responder: oneshot::Sender<String>,
     },
     /// A tool call was denied.
@@ -108,6 +110,10 @@ pub struct PendingApproval {
 pub struct PendingQuestion {
     pub question: String,
     pub tool_call_id: String,
+    /// Multiple-choice options. Empty means free-text mode.
+    pub options: Vec<String>,
+    /// Index of the currently selected option (for multiple choice).
+    pub selected: usize,
     /// One-shot channel to send the user's answer back to the agent loop.
     pub responder: Option<oneshot::Sender<String>>,
 }
@@ -382,6 +388,8 @@ mod tests {
         state.pending_question = Some(PendingQuestion {
             question: "What is your name?".to_string(),
             tool_call_id: "call-42".to_string(),
+            options: vec![],
+            selected: 0,
             responder: Some(tx),
         });
         assert!(state.has_pending_question());
@@ -400,6 +408,8 @@ mod tests {
         let question = PendingQuestion {
             question: "test?".to_string(),
             tool_call_id: "id-1".to_string(),
+            options: vec![],
+            selected: 0,
             responder: Some(tx),
         };
         question.responder.unwrap().send("my answer".to_string()).unwrap();

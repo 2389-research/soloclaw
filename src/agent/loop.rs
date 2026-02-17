@@ -371,11 +371,22 @@ async fn execute_tool_calls(
                 .unwrap_or("(no question provided)")
                 .to_string();
 
+            let options: Vec<String> = input
+                .get("options")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
             let (tx, rx) = oneshot::channel();
             let _ = agent_tx
                 .send(AgentEvent::AskUser {
                     question,
                     tool_call_id: id.clone(),
+                    options,
                     responder: tx,
                 })
                 .await;
