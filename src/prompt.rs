@@ -1,162 +1,49 @@
-// ABOUTME: Layered system prompt builder — assembles soul/agents/tools into one prompt.
-// ABOUTME: Compiles defaults from src/prompts/*.md, supports file-based overrides.
+// ABOUTME: Dynamic system prompt builder — assembles prompt from runtime capabilities.
+// ABOUTME: Faithful port of openclaw's buildAgentSystemPrompt() pattern.
 
-use std::fs;
-use std::path::PathBuf;
+use std::collections::HashMap;
 
-/// Compiled-in default prompt layers.
-const DEFAULT_SOUL: &str = include_str!("prompts/soul.md");
-const DEFAULT_AGENTS: &str = include_str!("prompts/agents.md");
-const DEFAULT_TOOLS: &str = include_str!("prompts/tools.md");
-
-/// Reads a file if it exists, returning None otherwise.
-pub fn read_if_exists(path: PathBuf) -> Option<String> {
-    if path.exists() {
-        fs::read_to_string(&path).ok()
-    } else {
-        None
-    }
-}
-
-/// Assembles a system prompt from layered sources: soul, agents, tools, and
-/// an optional local override. Each layer can be replaced by user files in
-/// `~/.simpleclaw/` or augmented with a `.simpleclaw.md` in the working directory.
+/// A context file loaded from the workspace to inject into the system prompt.
 #[derive(Debug, Clone)]
-pub struct SystemPromptBuilder {
-    pub soul: String,
-    pub agents: String,
-    pub tools: String,
-    pub local: Option<String>,
+pub struct ContextFile {
+    pub path: String,
+    pub content: String,
 }
 
-impl SystemPromptBuilder {
-    /// Creates a new builder loaded with the compiled-in defaults.
-    pub fn new() -> Self {
-        Self {
-            soul: DEFAULT_SOUL.to_string(),
-            agents: DEFAULT_AGENTS.to_string(),
-            tools: DEFAULT_TOOLS.to_string(),
-            local: None,
-        }
-    }
-
-    /// Checks `~/.simpleclaw/` for override files and replaces layers if found.
-    pub fn load_overrides(&mut self) -> &mut Self {
-        let base = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".simpleclaw");
-
-        if let Some(content) = read_if_exists(base.join("soul.md")) {
-            self.soul = content;
-        }
-        if let Some(content) = read_if_exists(base.join("agents.md")) {
-            self.agents = content;
-        }
-        if let Some(content) = read_if_exists(base.join("tools.md")) {
-            self.tools = content;
-        }
-
-        self
-    }
-
-    /// Checks for `.simpleclaw.md` in the current working directory and sets `local`.
-    pub fn load_local(&mut self) -> &mut Self {
-        let path = PathBuf::from(".simpleclaw.md");
-        self.local = read_if_exists(path);
-        self
-    }
-
-    /// Concatenates all non-empty layers separated by `"\n\n"`.
-    pub fn build(&self) -> String {
-        let layers: Vec<&str> = [
-            Some(self.soul.as_str()),
-            Some(self.agents.as_str()),
-            Some(self.tools.as_str()),
-            self.local.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        .filter(|s| !s.is_empty())
-        .collect();
-
-        layers.join("\n\n")
-    }
+/// Parameters for building the system prompt at runtime.
+#[derive(Debug, Clone)]
+pub struct SystemPromptParams {
+    /// Tool names available in the registry.
+    pub tool_names: Vec<String>,
+    /// Tool name -> description mapping.
+    pub tool_summaries: HashMap<String, String>,
+    /// Current working directory.
+    pub workspace_dir: String,
+    /// Operating system name (e.g., "macos", "linux").
+    pub os: String,
+    /// CPU architecture (e.g., "aarch64", "x86_64").
+    pub arch: String,
+    /// User's shell (e.g., "/bin/zsh").
+    pub shell: String,
+    /// LLM model name.
+    pub model: String,
+    /// Context files loaded from the workspace.
+    pub context_files: Vec<ContextFile>,
 }
 
-impl Default for SystemPromptBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Build the system prompt from runtime parameters.
+///
+/// Mirrors openclaw's buildAgentSystemPrompt(): assembles sections conditionally
+/// based on available capabilities and environment.
+pub fn build_system_prompt(_params: &SystemPromptParams) -> String {
+    // Placeholder — implemented in Task 2.
+    "You are a personal assistant running inside SimpleClaw.".to_string()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_contain_soul_content() {
-        let builder = SystemPromptBuilder::new();
-        let prompt = builder.build();
-        assert!(
-            prompt.contains("genuinely helpful"),
-            "expected soul content 'genuinely helpful' in prompt"
-        );
-    }
-
-    #[test]
-    fn defaults_contain_agents_content() {
-        let builder = SystemPromptBuilder::new();
-        let prompt = builder.build();
-        assert!(
-            prompt.contains("Agent Guidelines"),
-            "expected agents content 'Agent Guidelines' in prompt"
-        );
-    }
-
-    #[test]
-    fn defaults_contain_tools_content() {
-        let builder = SystemPromptBuilder::new();
-        let prompt = builder.build();
-        assert!(
-            prompt.contains("Local Notes"),
-            "expected tools content 'Local Notes' in prompt"
-        );
-    }
-
-    #[test]
-    fn build_skips_empty_layers() {
-        let mut builder = SystemPromptBuilder::new();
-        builder.tools = String::new();
-        let prompt = builder.build();
-        assert!(
-            !prompt.contains("\n\n\n\n"),
-            "empty layer should not produce quadruple newlines"
-        );
-    }
-
-    #[test]
-    fn local_layer_appended_when_present() {
-        let mut builder = SystemPromptBuilder::new();
-        builder.local = Some("project-specific instructions here".to_string());
-        let prompt = builder.build();
-        assert!(
-            prompt.contains("project-specific instructions here"),
-            "local layer should appear in built prompt"
-        );
-    }
-
-    #[test]
-    fn override_replaces_layer() {
-        let mut builder = SystemPromptBuilder::new();
-        builder.soul = "custom soul content for testing".to_string();
-        let prompt = builder.build();
-        assert!(
-            prompt.contains("custom soul content for testing"),
-            "custom soul should appear in prompt"
-        );
-        assert!(
-            !prompt.contains("genuinely helpful"),
-            "default soul should be replaced, not present"
-        );
-    }
+/// Load context files from the workspace directory.
+///
+/// Searches for: .simpleclaw.md, SOUL.md, AGENTS.md, TOOLS.md
+pub fn load_context_files(_workspace_dir: &str) -> Vec<ContextFile> {
+    // Placeholder — implemented in Task 3.
+    Vec::new()
 }
