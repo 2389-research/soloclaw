@@ -174,6 +174,14 @@ impl TuiState {
         self.cursor_pos += 1;
     }
 
+    /// Insert a string at the current cursor position.
+    pub fn insert_str_at_cursor(&mut self, s: &str) {
+        self.clamp_cursor();
+        let byte_index = self.cursor_byte_index();
+        self.input.insert_str(byte_index, s);
+        self.cursor_pos += s.chars().count();
+    }
+
     /// Delete the character before the cursor (backspace behavior).
     pub fn backspace_char(&mut self) {
         self.clamp_cursor();
@@ -335,5 +343,53 @@ mod tests {
         state.clamp_cursor();
         assert_eq!(state.cursor_pos, 3);
         assert_eq!(state.cursor_byte_index(), state.input.len());
+    }
+
+    #[test]
+    fn insert_str_at_beginning() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.insert_str_at_cursor("hello");
+        assert_eq!(state.input, "hello");
+        assert_eq!(state.cursor_pos, 5);
+    }
+
+    #[test]
+    fn insert_str_at_middle() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "ac".to_string();
+        state.cursor_pos = 1;
+        state.insert_str_at_cursor("b");
+        assert_eq!(state.input, "abc");
+        assert_eq!(state.cursor_pos, 2);
+    }
+
+    #[test]
+    fn insert_str_at_end() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "hello".to_string();
+        state.cursor_pos = 5;
+        state.insert_str_at_cursor(" world");
+        assert_eq!(state.input, "hello world");
+        assert_eq!(state.cursor_pos, 11);
+    }
+
+    #[test]
+    fn insert_str_with_unicode() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "aé".to_string();
+        state.cursor_pos = 1;
+        state.insert_str_at_cursor("🙂");
+        assert_eq!(state.input, "a🙂é");
+        assert_eq!(state.cursor_pos, 2);
+    }
+
+    #[test]
+    fn insert_str_empty_string() {
+        let mut state = TuiState::new("m".to_string(), 0);
+        state.input = "hello".to_string();
+        state.cursor_pos = 3;
+        state.insert_str_at_cursor("");
+        assert_eq!(state.input, "hello");
+        assert_eq!(state.cursor_pos, 3);
     }
 }

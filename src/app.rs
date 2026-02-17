@@ -7,7 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEvent, MouseEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -165,7 +166,7 @@ impl App {
         // Set up terminal.
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -173,7 +174,7 @@ impl App {
         let original_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let _ = disable_raw_mode();
-            let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+            let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste);
             original_hook(info);
         }));
 
@@ -200,7 +201,8 @@ impl App {
         execute!(
             terminal.backend_mut(),
             LeaveAlternateScreen,
-            DisableMouseCapture
+            DisableMouseCapture,
+            DisableBracketedPaste
         )?;
         terminal.show_cursor()?;
 
@@ -246,6 +248,11 @@ impl App {
                         }
                         _ => {}
                     },
+                    Event::Paste(text) => {
+                        if !state.streaming && !state.has_pending_approval() {
+                            state.insert_str_at_cursor(&text);
+                        }
+                    }
                     _ => {}
                 }
             }
