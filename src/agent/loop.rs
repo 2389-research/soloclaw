@@ -39,6 +39,7 @@ pub struct AgentLoopParams {
     pub session_logger: Option<Arc<Mutex<SessionLogger>>>,
     pub workspace_dir: PathBuf,
     pub compaction_config: CompactionConfig,
+    pub existing_created_at: Option<String>,
 }
 
 /// Log a message via the session logger, if one is configured.
@@ -63,7 +64,9 @@ pub async fn run_agent_loop(
     agent_tx: mpsc::Sender<AgentEvent>,
 ) {
     let mut messages: Vec<Message> = params.initial_messages;
-    let created_at = chrono::Utc::now().to_rfc3339();
+    let created_at = params
+        .existing_created_at
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
 
     loop {
         // Wait for a user event.
@@ -98,9 +101,8 @@ pub async fn run_agent_loop(
                     let _ = agent_tx.send(AgentEvent::Error(e.to_string())).await;
                 }
 
-                let _ = agent_tx.send(AgentEvent::Done).await;
-
-                // Check if compaction is needed after each complete turn.
+                // Check if compaction is needed before signaling Done, so the
+                // TUI keeps streaming=true and blocks user input during compaction.
                 if compaction::needs_compaction(
                     &messages,
                     &params.model,
@@ -140,6 +142,8 @@ pub async fn run_agent_loop(
                         }
                     }
                 }
+
+                let _ = agent_tx.send(AgentEvent::Done).await;
 
                 // Save session state after each complete turn.
                 save_session(
@@ -614,6 +618,7 @@ mod tests {
             let _: &Option<Arc<Mutex<SessionLogger>>> = &p.session_logger;
             let _: &PathBuf = &p.workspace_dir;
             let _: &CompactionConfig = &p.compaction_config;
+            let _: &Option<String> = &p.existing_created_at;
         }
     }
 }

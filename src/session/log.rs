@@ -19,11 +19,18 @@ pub struct LogEntry {
 }
 
 /// Computes a deterministic hex hash of the workspace directory path.
+///
+/// Uses FNV-1a (64-bit) which is a well-defined, stable algorithm — unlike
+/// `std::hash::DefaultHasher` whose output can change between Rust versions,
+/// which would orphan saved sessions.
 pub fn workspace_hash(workspace_dir: &Path) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::hash::DefaultHasher::new();
-    workspace_dir.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let bytes = workspace_dir.as_os_str().as_encoded_bytes();
+    let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
+    for &byte in bytes {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3); // FNV prime
+    }
+    format!("{:016x}", hash)
 }
 
 /// Appends conversation messages as JSONL lines to a session log file.

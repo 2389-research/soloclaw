@@ -178,6 +178,7 @@ impl App {
                 session_logger,
                 workspace_dir: workspace_path.clone(),
                 compaction_config: self.config.compaction.clone(),
+                existing_created_at: loaded_session.as_ref().map(|s| s.created_at.clone()),
             },
             user_rx,
             agent_tx,
