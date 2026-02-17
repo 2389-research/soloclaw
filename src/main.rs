@@ -22,6 +22,10 @@ struct Cli {
     /// Default security level (deny, allowlist, full).
     #[arg(long)]
     security: Option<String>,
+
+    /// Start a fresh session instead of resuming an existing one.
+    #[arg(long)]
+    fresh: bool,
 }
 
 #[derive(clap::Subcommand)]
@@ -54,6 +58,6 @@ async fn main() -> anyhow::Result<()> {
         config.approval.security = security;
     }
 
-    let app = app::App::new(config);
+    let app = app::App::new(config, cli.fresh);
     app.run().await
 }

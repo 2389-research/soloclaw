@@ -28,10 +28,12 @@ use crate::prompt::{
     SystemPromptParams, build_system_prompt, load_context_files, load_skill_files,
 };
 use crate::session::SessionLogger;
+use crate::session::persistence;
 use crate::tui::input::{InputResult, handle_key};
 use crate::tui::state::{
     AgentEvent, ChatMessageKind, PendingApproval, ToolCallStatus, TuiState, UserEvent,
 };
+
 use crate::tui::ui::render;
 
 const MOUSE_SCROLL_STEP: u16 = 3;
@@ -40,12 +42,13 @@ const MAX_AGENT_EVENTS_PER_TICK: usize = 128;
 /// Top-level application that orchestrates all subsystems.
 pub struct App {
     config: Config,
+    fresh: bool,
 }
 
 impl App {
     /// Create a new app with the given configuration.
-    pub fn new(config: Config) -> Self {
-        Self { config }
+    pub fn new(config: Config, fresh: bool) -> Self {
+        Self { config, fresh }
     }
 
     /// Run the application: set up subsystems, launch the agent loop, and drive the TUI.
@@ -146,6 +149,18 @@ impl App {
             }
         };
 
+        // Try to load an existing session for this workspace (unless --fresh).
+        let loaded_session = if !self.fresh {
+            persistence::load_session(&workspace_path).ok().flatten()
+        } else {
+            None
+        };
+
+        let initial_messages = loaded_session
+            .as_ref()
+            .map(|s| s.messages.clone())
+            .unwrap_or_default();
+
         // Spawn the agent loop in a background task.
         let agent_handle = tokio::spawn(agent::run_agent_loop(
             AgentLoopParams {
@@ -156,8 +171,9 @@ impl App {
                 max_tokens,
                 approval_timeout_seconds,
                 system_prompt,
-                initial_messages: Vec::new(),
+                initial_messages,
                 session_logger,
+                workspace_dir: workspace_path.clone(),
             },
             user_rx,
             agent_tx,
@@ -192,6 +208,72 @@ impl App {
             startup_parts.push(format!("Skills: {}", skill_file_names.join(", ")));
         }
         state.push_message(ChatMessageKind::System, startup_parts.join(" | "));
+
+        // Replay loaded session messages into the TUI for display.
+        if let Some(ref session) = loaded_session {
+            for msg in &session.messages {
+                match msg.role {
+                    Role::User => {
+                        for block in &msg.content {
+                            match block {
+                                ContentBlock::Text { text } => {
+                                    if !text.is_empty() {
+                                        state.push_message(ChatMessageKind::User, text.clone());
+                                    }
+                                }
+                                ContentBlock::ToolResult {
+                                    content, is_error, ..
+                                } => {
+                                    state.push_message(
+                                        ChatMessageKind::ToolResult {
+                                            is_error: *is_error,
+                                        },
+                                        content.clone(),
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Role::Assistant => {
+                        for block in &msg.content {
+                            match block {
+                                ContentBlock::Text { text } => {
+                                    if !text.is_empty() {
+                                        state.push_message(
+                                            ChatMessageKind::Assistant,
+                                            text.clone(),
+                                        );
+                                    }
+                                }
+                                ContentBlock::ToolUse { name, input, .. } => {
+                                    let params_summary = input.to_string();
+                                    let truncated: String =
+                                        params_summary.chars().take(80).collect();
+                                    let display = if truncated.len() < params_summary.len() {
+                                        format!("{}({}...)", name, truncated)
+                                    } else {
+                                        format!("{}({})", name, params_summary)
+                                    };
+                                    state.push_message(
+                                        ChatMessageKind::ToolCall {
+                                            tool_name: name.clone(),
+                                            status: ToolCallStatus::Allowed,
+                                        },
+                                        display,
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            state.push_message(
+                ChatMessageKind::System,
+                "Session resumed".to_string(),
+            );
+        }
 
         // Run the event loop.
         let result = Self::event_loop(&mut terminal, &mut state, &user_tx, &mut agent_rx).await;

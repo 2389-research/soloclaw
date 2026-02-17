@@ -2,6 +2,7 @@
 // ABOUTME: Handles streaming responses, tool call approval/execution, and message history.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,6 +13,7 @@ use mux::prelude::*;
 
 use crate::approval::{ApprovalDecision, ApprovalEngine, EngineOutcome, ToolCallInfo};
 use crate::session::SessionLogger;
+use crate::session::persistence::{SessionState, save_session};
 use crate::tui::state::{AgentEvent, UserEvent};
 
 /// Metadata tracked for a tool call being assembled from streaming events.
@@ -32,6 +34,7 @@ pub struct AgentLoopParams {
     pub system_prompt: String,
     pub initial_messages: Vec<Message>,
     pub session_logger: Option<Arc<Mutex<SessionLogger>>>,
+    pub workspace_dir: PathBuf,
 }
 
 /// Log a message via the session logger, if one is configured.
@@ -56,6 +59,7 @@ pub async fn run_agent_loop(
     agent_tx: mpsc::Sender<AgentEvent>,
 ) {
     let mut messages: Vec<Message> = params.initial_messages;
+    let created_at = chrono::Utc::now().to_rfc3339();
 
     loop {
         // Wait for a user event.
@@ -91,6 +95,20 @@ pub async fn run_agent_loop(
                 }
 
                 let _ = agent_tx.send(AgentEvent::Done).await;
+
+                // Save session state after each complete turn.
+                save_session(
+                    &params.workspace_dir,
+                    &SessionState {
+                        workspace_dir: params.workspace_dir.to_string_lossy().to_string(),
+                        model: params.model.clone(),
+                        created_at: created_at.clone(),
+                        updated_at: chrono::Utc::now().to_rfc3339(),
+                        messages: messages.clone(),
+                        total_tokens: 0,
+                    },
+                )
+                .ok();
             }
         }
     }
@@ -522,6 +540,7 @@ mod tests {
             let _: &String = &p.system_prompt;
             let _: &Vec<Message> = &p.initial_messages;
             let _: &Option<Arc<Mutex<SessionLogger>>> = &p.session_logger;
+            let _: &PathBuf = &p.workspace_dir;
         }
     }
 }
