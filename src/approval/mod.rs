@@ -3,10 +3,12 @@
 
 pub mod allowlist;
 pub mod analysis;
+pub mod engine;
 pub mod policy;
 pub mod types;
 
 pub use allowlist::*;
 pub use analysis::*;
+pub use engine::*;
 pub use policy::*;
 pub use types::*;
