@@ -108,6 +108,12 @@ impl App {
         let context_files = load_context_files(&workspace_dir);
         let skill_files = load_skill_files(&workspace_dir, &self.config.skills);
 
+        // Collect context file names for the startup message shown in the TUI.
+        let context_file_names: Vec<String> =
+            context_files.iter().map(|f| f.path.clone()).collect();
+        let skill_file_names: Vec<String> =
+            skill_files.iter().map(|f| f.name.clone()).collect();
+
         // Collect tool names and summaries from the registry.
         let tool_defs = registry.to_definitions().await;
         let tool_names: Vec<String> = tool_defs.iter().map(|d| d.name.clone()).collect();
@@ -158,6 +164,18 @@ impl App {
 
         // Create TUI state.
         let mut state = TuiState::new(model, tool_count);
+
+        // Show a startup message listing loaded context and skill files.
+        let mut startup_parts: Vec<String> = Vec::new();
+        if context_file_names.is_empty() {
+            startup_parts.push("No context files found".to_string());
+        } else {
+            startup_parts.push(format!("Context: {}", context_file_names.join(", ")));
+        }
+        if !skill_file_names.is_empty() {
+            startup_parts.push(format!("Skills: {}", skill_file_names.join(", ")));
+        }
+        state.push_message(ChatMessageKind::System, startup_parts.join(" | "));
 
         // Run the event loop.
         let result = Self::event_loop(&mut terminal, &mut state, &user_tx, &mut agent_rx).await;

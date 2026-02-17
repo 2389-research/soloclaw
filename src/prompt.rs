@@ -54,7 +54,7 @@ pub fn build_system_prompt(params: &SystemPromptParams) -> String {
     let mut lines: Vec<String> = Vec::new();
 
     // Identity
-    lines.push("You are a personal assistant running inside SingleClaw.".to_string());
+    lines.push("You are a personal assistant running inside SoloClaw.".to_string());
     lines.push(String::new());
 
     // Tooling
@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn prompt_starts_with_identity() {
         let prompt = build_system_prompt(&base_params());
-        assert!(prompt.starts_with("You are a personal assistant running inside SingleClaw."));
+        assert!(prompt.starts_with("You are a personal assistant running inside SoloClaw."));
     }
 
     #[test]
@@ -557,7 +557,7 @@ mod tests {
     fn section_order_matches_openclaw() {
         let prompt = build_system_prompt(&base_params());
 
-        let identity_pos = prompt.find("SingleClaw").unwrap();
+        let identity_pos = prompt.find("SoloClaw").unwrap();
         let tooling_pos = prompt.find("## Tooling").unwrap();
         let style_pos = prompt.find("## Tool Call Style").unwrap();
         let safety_pos = prompt.find("## Safety").unwrap();

@@ -52,7 +52,7 @@ fn base_params() -> SystemPromptParams {
 fn full_prompt_has_all_runtime_sections() {
     let prompt = build_system_prompt(&base_params());
 
-    assert!(prompt.contains("SingleClaw"), "missing identity");
+    assert!(prompt.contains("SoloClaw"), "missing identity");
     assert!(prompt.contains("## Tooling"), "missing tooling section");
     assert!(
         prompt.contains("- bash: Execute a bash command"),
@@ -156,7 +156,7 @@ fn load_context_files_finds_files_in_workspace() {
 fn section_order_matches_openclaw() {
     let prompt = build_system_prompt(&base_params());
 
-    let identity_pos = prompt.find("SingleClaw").unwrap();
+    let identity_pos = prompt.find("SoloClaw").unwrap();
     let tooling_pos = prompt.find("## Tooling").unwrap();
     let style_pos = prompt.find("## Tool Call Style").unwrap();
     let safety_pos = prompt.find("## Safety").unwrap();
