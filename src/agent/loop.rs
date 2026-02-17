@@ -120,7 +120,6 @@ pub async fn run_agent_loop(
                         Ok(summary_text) => {
                             let user_messages = compaction::collect_user_messages(&messages);
                             let compacted = compaction::build_compacted_history(
-                                &params.system_prompt,
                                 &user_messages,
                                 &summary_text,
                                 params.compaction_config.user_message_budget_tokens,

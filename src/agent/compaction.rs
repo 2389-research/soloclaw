@@ -9,7 +9,11 @@ use crate::config::CompactionConfig;
 
 pub const SUMMARY_PREFIX: &str = "Another language model started to solve this problem and produced a summary of its thinking process:";
 
-pub const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+/// Default token budget for retained user messages after compaction.
+pub const DEFAULT_USER_MESSAGE_BUDGET_TOKENS: usize = 20_000;
+
+/// Fraction of the context window that triggers automatic compaction.
+const COMPACTION_THRESHOLD_RATIO: f64 = 0.9;
 
 pub const SUMMARIZATION_PROMPT: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n\nInclude:\n- Current progress and key decisions made\n- Important context, constraints, or user preferences\n- What remains to be done (clear next steps)\n- Any critical data, examples, or references needed to continue\n\nBe concise, structured, and focused on helping the next LLM seamlessly continue the work.";
 
@@ -35,7 +39,7 @@ pub fn approx_messages_tokens(messages: &[Message]) -> usize {
 ///
 /// Default is 90% of context window, capped by an optional override.
 pub fn auto_compact_limit(context_window: u64, override_limit: Option<u64>) -> u64 {
-    let default_limit = (context_window as f64 * 0.9) as u64;
+    let default_limit = (context_window as f64 * COMPACTION_THRESHOLD_RATIO) as u64;
     match override_limit {
         Some(cap) => default_limit.min(cap),
         None => default_limit,
@@ -103,7 +107,6 @@ pub fn collect_user_messages(messages: &[Message]) -> Vec<String> {
 /// If a message exceeds the remaining budget, it is truncated with a marker.
 /// Returns messages in chronological order: selected user messages, then summary message.
 pub fn build_compacted_history(
-    _system_prompt: &str,
     user_messages: &[String],
     summary_text: &str,
     max_user_tokens: usize,
@@ -119,8 +122,8 @@ pub fn build_compacted_history(
             remaining_budget -= tokens;
         } else if remaining_budget > 0 {
             // Truncate this message to fit within remaining budget.
-            let byte_limit = remaining_budget * 4;
-            let truncated: String = text.chars().take(byte_limit).collect();
+            let char_limit = remaining_budget * 4;
+            let truncated: String = text.chars().take(char_limit).collect();
             let omitted = tokens.saturating_sub(remaining_budget);
             let truncated_msg = format!("{}...{} tokens truncated...", truncated, omitted);
             selected.push(Message::user(truncated_msg));
@@ -283,7 +286,7 @@ mod tests {
         // Budget of 10 tokens = 40 bytes. "recent message" = 14 bytes = 3 tokens,
         // "middle message" = 14 bytes = 3 tokens, "old message" = 11 bytes = 2 tokens.
         // Total = 8 tokens, fits in budget.
-        let result = build_compacted_history("system", &user_messages, "summary", 10);
+        let result = build_compacted_history(&user_messages, "summary", 10);
 
         // Should have all 3 user messages + 1 summary = 4 messages.
         assert_eq!(result.len(), 4);
@@ -304,7 +307,7 @@ mod tests {
             "y".repeat(40),  // 10 tokens
         ];
         // Budget = 15 tokens. "y" (10 tokens) fits. "x" (50 tokens) has 5 token budget remaining.
-        let result = build_compacted_history("system", &user_messages, "summary text", 15);
+        let result = build_compacted_history(&user_messages, "summary text", 15);
 
         // Should have: truncated "x" message, "y" message, summary = 3 messages.
         assert_eq!(result.len(), 3);
@@ -320,7 +323,7 @@ mod tests {
     #[test]
     fn build_compacted_history_appends_summary_with_prefix() {
         let user_messages = vec!["question".to_string()];
-        let result = build_compacted_history("system", &user_messages, "my summary", 100);
+        let result = build_compacted_history(&user_messages, "my summary", 100);
 
         // Last message is the summary.
         let last = result.last().unwrap();

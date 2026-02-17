@@ -138,10 +138,11 @@ pub struct CompactionConfig {
 
 impl Default for CompactionConfig {
     fn default() -> Self {
+        use crate::agent::compaction::DEFAULT_USER_MESSAGE_BUDGET_TOKENS;
         Self {
             enabled: true,
             threshold_token_limit: None,
-            user_message_budget_tokens: 20_000,
+            user_message_budget_tokens: DEFAULT_USER_MESSAGE_BUDGET_TOKENS,
         }
     }
 }
