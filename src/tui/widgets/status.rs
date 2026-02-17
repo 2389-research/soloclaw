@@ -1,33 +1,70 @@
-// ABOUTME: Status bar widget — renders model name, tool count, token usage, and streaming indicator.
+// ABOUTME: Status bar widget — renders directory, context usage bar, and elapsed session time.
 // ABOUTME: Displayed at the bottom of the TUI as a single-line summary.
+
+use std::time::Instant;
 
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
-/// Render the status bar line with model, tools, tokens, and streaming state.
-pub fn status_line(
-    model: &str,
-    tool_count: usize,
-    total_tokens: u64,
-    streaming: bool,
-) -> Line<'static> {
+/// Parameters for rendering the status bar.
+pub struct StatusBarParams<'a> {
+    pub workspace_dir: &'a str,
+    pub context_used: u64,
+    pub context_window: u64,
+    pub session_start: Instant,
+    pub streaming: bool,
+}
+
+/// Render the status bar: directory │ context bar percentage │ elapsed time.
+pub fn status_line(params: &StatusBarParams) -> Line<'static> {
     let dim = Style::default().fg(Color::DarkGray);
+
+    // Directory name (last component of path).
+    let dir_name = params
+        .workspace_dir
+        .rsplit('/')
+        .next()
+        .unwrap_or(params.workspace_dir);
+
+    let context_pct = if params.context_window > 0 {
+        ((params.context_used as f64 / params.context_window as f64) * 100.0).min(100.0)
+    } else {
+        0.0
+    };
+
+    let bar = render_context_bar(context_pct, 12);
+
+    let bar_color = if context_pct >= 90.0 {
+        Color::Red
+    } else if context_pct >= 70.0 {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+
+    let elapsed = format_elapsed(params.session_start);
+
     let mut spans = vec![
-        Span::styled(format!(" {} ", model), Style::default().fg(Color::Cyan)),
-        Span::styled("| ", dim),
+        Span::styled(" \u{1F4C1} ", dim),
         Span::styled(
-            format!("{} tools ", tool_count),
+            format!("{} ", dir_name),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::styled("\u{2502} ", dim),
+        Span::styled(bar, Style::default().fg(bar_color)),
+        Span::styled(
+            format!(" {:.0}% ", context_pct),
             Style::default().fg(Color::White),
         ),
-        Span::styled("| ", dim),
+        Span::styled("\u{2502} ", dim),
         Span::styled(
-            format!("{} tokens ", format_tokens(total_tokens)),
+            format!("\u{23F1} {} ", elapsed),
             Style::default().fg(Color::White),
         ),
     ];
 
-    if streaming {
-        spans.push(Span::styled("| ", dim));
+    if params.streaming {
+        spans.push(Span::styled("\u{2502} ", dim));
         spans.push(Span::styled(
             "streaming... ",
             Style::default().fg(Color::Yellow),
@@ -35,6 +72,52 @@ pub fn status_line(
     }
 
     Line::from(spans)
+}
+
+/// Render a context usage bar using block characters.
+/// `filled_chars` total width, proportional fill with block elements.
+fn render_context_bar(pct: f64, width: usize) -> String {
+    let filled = (pct / 100.0) * width as f64;
+    let full_blocks = filled.floor() as usize;
+    let remainder = filled - filled.floor();
+
+    let mut bar = String::with_capacity(width * 4);
+    for _ in 0..full_blocks.min(width) {
+        bar.push('\u{2588}'); // Full block
+    }
+
+    if full_blocks < width {
+        // Use braille-style partial fill for the fractional block.
+        let partial = if remainder >= 0.5 {
+            '\u{2593}' // Dark shade
+        } else if remainder >= 0.25 {
+            '\u{2592}' // Medium shade
+        } else {
+            '\u{2591}' // Light shade
+        };
+        bar.push(partial);
+
+        // Fill remaining with light dots.
+        for _ in (full_blocks + 1)..width {
+            bar.push('\u{2591}');
+        }
+    }
+
+    bar
+}
+
+/// Format elapsed time as human-readable "Xh Ym" or "Xm Ys".
+fn format_elapsed(start: Instant) -> String {
+    let secs = start.elapsed().as_secs();
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+
+    if hours > 0 {
+        format!("{}h {:02}m", hours, mins)
+    } else {
+        let s = secs % 60;
+        format!("{}m {:02}s", mins, s)
+    }
 }
 
 /// Format a token count for display: small numbers as-is, thousands as X.Xk, millions as X.XM.
@@ -76,19 +159,85 @@ mod tests {
 
     #[test]
     fn status_line_shows_streaming() {
-        let line = status_line("claude-sonnet", 5, 1500, true);
+        let params = StatusBarParams {
+            workspace_dir: "/home/user/my-project",
+            context_used: 120_000,
+            context_window: 200_000,
+            session_start: Instant::now(),
+            streaming: true,
+        };
+        let line = status_line(&params);
         let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
-        assert!(text.contains("claude-sonnet"));
-        assert!(text.contains("5 tools"));
-        assert!(text.contains("1.5k tokens"));
+        assert!(text.contains("my-project"));
+        assert!(text.contains("60%"));
         assert!(text.contains("streaming..."));
     }
 
     #[test]
     fn status_line_no_streaming() {
-        let line = status_line("gpt-4", 3, 500, false);
+        let params = StatusBarParams {
+            workspace_dir: "/tmp/test-dir",
+            context_used: 0,
+            context_window: 128_000,
+            session_start: Instant::now(),
+            streaming: false,
+        };
+        let line = status_line(&params);
         let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
-        assert!(text.contains("gpt-4"));
+        assert!(text.contains("test-dir"));
+        assert!(text.contains("0%"));
         assert!(!text.contains("streaming"));
+    }
+
+    #[test]
+    fn context_bar_empty() {
+        let bar = render_context_bar(0.0, 10);
+        assert_eq!(bar.chars().count(), 10);
+        assert!(!bar.contains('\u{2588}')); // No full blocks
+    }
+
+    #[test]
+    fn context_bar_full() {
+        let bar = render_context_bar(100.0, 10);
+        assert_eq!(bar.chars().count(), 10);
+        assert!(bar.chars().all(|c| c == '\u{2588}'));
+    }
+
+    #[test]
+    fn context_bar_half() {
+        let bar = render_context_bar(50.0, 10);
+        assert_eq!(bar.chars().count(), 10);
+        let full_count = bar.chars().filter(|&c| c == '\u{2588}').count();
+        assert_eq!(full_count, 5);
+    }
+
+    #[test]
+    fn format_elapsed_minutes() {
+        // Can't easily test with Instant, so test the formatting logic indirectly
+        // by checking the status line contains the timer emoji.
+        let params = StatusBarParams {
+            workspace_dir: "/tmp/test",
+            context_used: 0,
+            context_window: 100_000,
+            session_start: Instant::now(),
+            streaming: false,
+        };
+        let line = status_line(&params);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("0m"));
+    }
+
+    #[test]
+    fn context_percentage_capped_at_100() {
+        let params = StatusBarParams {
+            workspace_dir: "/tmp",
+            context_used: 300_000,
+            context_window: 200_000,
+            session_start: Instant::now(),
+            streaming: false,
+        };
+        let line = status_line(&params);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("100%"));
     }
 }

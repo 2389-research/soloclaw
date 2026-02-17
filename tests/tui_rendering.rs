@@ -81,15 +81,16 @@ fn renders_user_message() {
 }
 
 /// The status bar (last row, y=23 on an 80x24 terminal) should display
-/// the model name, tool count, and formatted token count, verifying
-/// that TuiState metrics flow through to the status bar widget.
+/// the workspace directory, context usage percentage, and elapsed time.
 #[test]
 fn renders_status_bar() {
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
 
     let mut state = TuiState::new("claude-sonnet".to_string(), 12);
-    state.total_tokens = 1500;
+    state.workspace_dir = "/home/user/my-project".to_string();
+    state.context_used = 60_000;
+    state.context_window = 200_000;
 
     terminal
         .draw(|frame| ui::render(frame, &mut state))
@@ -98,18 +99,18 @@ fn renders_status_bar() {
     // Status bar is at the bottom row (y=23 in 0-indexed for a 24-row terminal).
     let status = row_text(&terminal, 23);
     assert!(
-        status.contains("1.5k"),
-        "status bar should contain '1.5k' for 1500 tokens, got: {:?}",
+        status.contains("my-project"),
+        "status bar should contain directory name, got: {:?}",
         status,
     );
     assert!(
-        status.contains("12 tools"),
-        "status bar should contain '12 tools', got: {:?}",
+        status.contains("30%"),
+        "status bar should contain context percentage, got: {:?}",
         status,
     );
     assert!(
-        status.contains("claude-sonnet"),
-        "status bar should contain 'claude-sonnet', got: {:?}",
+        status.contains("0m"),
+        "status bar should contain elapsed time, got: {:?}",
         status,
     );
 }

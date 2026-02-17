@@ -6,13 +6,13 @@ use ratatui::layout::{Constraint, Direction, Layout, Position};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::tui::state::TuiState;
 use crate::tui::widgets::approval::approval_line;
 use crate::tui::widgets::chat::render_chat_lines;
 use crate::tui::widgets::question::question_lines;
-use crate::tui::widgets::status::status_line;
+use crate::tui::widgets::status::{StatusBarParams, status_line};
 
 /// Render the full TUI screen layout to the given frame.
 pub fn render(frame: &mut Frame, state: &mut TuiState) {
@@ -70,7 +70,13 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
 
     let chat_chunk = chunks[1];
     let visible_height = chat_chunk.height;
-    let total_lines = wrapped_line_count(&chat_lines, chat_chunk.width);
+
+    // Use ratatui's own line_count() to get an accurate wrapped line count
+    // that exactly matches its internal rendering. This prevents scroll
+    // miscalculations that could hide the bottom of chat content.
+    let chat_paragraph = Paragraph::new(chat_lines.clone())
+        .wrap(Wrap { trim: false });
+    let total_lines = chat_paragraph.line_count(chat_chunk.width) as u16;
     let max_scroll = total_lines.saturating_sub(visible_height);
 
     // Cap scroll_offset so it can't go past the top of the content.
@@ -82,9 +88,7 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
     let scroll = max_scroll.saturating_sub(state.scroll_offset);
 
     frame.render_widget(
-        Paragraph::new(chat_lines)
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0)),
+        chat_paragraph.scroll((scroll, 0)),
         chat_chunk,
     );
 
@@ -159,117 +163,13 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
     }
 
     // Status bar
-    let status = status_line(
-        &state.model,
-        state.tool_count,
-        state.total_tokens,
-        state.streaming,
-    );
+    let status = status_line(&StatusBarParams {
+        workspace_dir: &state.workspace_dir,
+        context_used: state.context_used,
+        context_window: state.context_window,
+        session_start: state.session_start,
+        streaming: state.streaming,
+    });
     frame.render_widget(Paragraph::new(status), status_chunk);
 }
 
-fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> u16 {
-    if width == 0 {
-        return 0;
-    }
-
-    let max_width = width as usize;
-    let mut total = 0u16;
-
-    for line in lines {
-        let text: String = line
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        total = total.saturating_add(wrap_rows_for_text(&text, max_width) as u16);
-    }
-
-    total
-}
-
-fn wrap_rows_for_text(text: &str, width: usize) -> usize {
-    if text.is_empty() {
-        return 1;
-    }
-
-    let mut rows = 1usize;
-    let mut col = 0usize;
-    let mut token = String::new();
-    let mut in_whitespace = None;
-
-    for ch in text.chars() {
-        let is_ws = ch.is_whitespace();
-        match in_whitespace {
-            Some(current) if current == is_ws => token.push(ch),
-            Some(_) => {
-                apply_wrap_token(
-                    &token,
-                    in_whitespace.unwrap_or(false),
-                    width,
-                    &mut rows,
-                    &mut col,
-                );
-                token.clear();
-                token.push(ch);
-                in_whitespace = Some(is_ws);
-            }
-            None => {
-                token.push(ch);
-                in_whitespace = Some(is_ws);
-            }
-        }
-    }
-
-    if !token.is_empty() {
-        apply_wrap_token(
-            &token,
-            in_whitespace.unwrap_or(false),
-            width,
-            &mut rows,
-            &mut col,
-        );
-    }
-
-    rows
-}
-
-fn apply_wrap_token(
-    token: &str,
-    is_whitespace: bool,
-    width: usize,
-    rows: &mut usize,
-    col: &mut usize,
-) {
-    let len = token.chars().map(display_width).sum::<usize>();
-
-    if len > width {
-        if !is_whitespace && *col > 0 {
-            *rows += 1;
-            *col = 0;
-        }
-        for ch in token.chars() {
-            let ch_width = display_width(ch);
-            if ch_width == 0 {
-                continue;
-            }
-            if *col + ch_width > width {
-                *rows += 1;
-                *col = 0;
-            }
-            *col += ch_width;
-        }
-        return;
-    }
-
-    if *col + len > width {
-        *rows += 1;
-        *col = 0;
-    }
-
-    *col += len;
-}
-
-fn display_width(ch: char) -> usize {
-    UnicodeWidthChar::width(ch).unwrap_or(0)
-}

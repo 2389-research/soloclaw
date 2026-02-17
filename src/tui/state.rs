@@ -124,6 +124,10 @@ pub struct TuiState {
     pub model: String,
     pub tool_count: usize,
     pub total_tokens: u64,
+    pub context_window: u64,
+    pub context_used: u64,
+    pub session_start: std::time::Instant,
+    pub workspace_dir: String,
 }
 
 impl TuiState {
@@ -140,6 +144,10 @@ impl TuiState {
             model,
             tool_count,
             total_tokens: 0,
+            context_window: 128_000,
+            context_used: 0,
+            session_start: std::time::Instant::now(),
+            workspace_dir: String::new(),
         }
     }
 
@@ -150,10 +158,12 @@ impl TuiState {
     }
 
     /// Append text to the last assistant message, or create a new one if needed.
+    /// Keeps scroll pinned to the bottom so new content is always visible.
     pub fn append_to_last_assistant(&mut self, text: &str) {
         if let Some(msg) = self.messages.last_mut() {
             if msg.kind == ChatMessageKind::Assistant {
                 msg.content.push_str(text);
+                self.scroll_offset = 0;
                 return;
             }
         }

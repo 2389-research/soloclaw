@@ -22,6 +22,7 @@ use mux::prelude::*;
 
 use crate::agent;
 use crate::agent::AgentLoopParams;
+use crate::agent::compaction;
 use crate::approval::ApprovalEngine;
 use crate::tools::ask_user::AskUserTool;
 use crate::config::{Config, load_mcp_configs};
@@ -200,7 +201,9 @@ impl App {
         }));
 
         // Create TUI state.
-        let mut state = TuiState::new(model, tool_count);
+        let mut state = TuiState::new(model.clone(), tool_count);
+        state.context_window = compaction::context_window_for_model(&model);
+        state.workspace_dir = workspace_path.to_string_lossy().to_string();
 
         // Show a startup message listing loaded context and skill files.
         let mut startup_parts: Vec<String> = Vec::new();
@@ -467,6 +470,7 @@ fn handle_agent_event(state: &mut TuiState, event: AgentEvent) -> LoopAction {
             output_tokens,
         } => {
             state.total_tokens += (input_tokens + output_tokens) as u64;
+            state.context_used = input_tokens as u64;
         }
         AgentEvent::Error(msg) => {
             state.push_message(ChatMessageKind::System, format!("Error: {}", msg));
