@@ -1,5 +1,5 @@
 // ABOUTME: Keyboard input handling for the TUI — translates key events into actions.
-// ABOUTME: Handles normal typing, approval navigation, and streaming mode.
+// ABOUTME: Handles normal typing, approval navigation, question input, and streaming mode.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -34,8 +34,8 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> InputResult {
         return InputResult::None;
     }
 
-    // Up/Down always scroll during streaming or approval modes.
-    if state.streaming || state.has_pending_approval() {
+    // Up/Down always scroll during streaming, approval, or question modes.
+    if state.streaming || state.has_pending_approval() || state.has_pending_question() {
         match key.code {
             KeyCode::Up => {
                 state.scroll_offset = state.scroll_offset.saturating_add(1);
@@ -96,36 +96,8 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> InputResult {
                 InputResult::None
             }
         }
-        KeyCode::Char(c) => {
-            state.insert_char_at_cursor(c);
-            InputResult::None
-        }
-        KeyCode::Backspace => {
-            state.backspace_char();
-            InputResult::None
-        }
-        KeyCode::Delete => {
-            state.delete_char_at_cursor();
-            InputResult::None
-        }
-        KeyCode::Left => {
-            state.move_cursor_left();
-            InputResult::None
-        }
-        KeyCode::Right => {
-            state.move_cursor_right();
-            InputResult::None
-        }
-        KeyCode::Home => {
-            state.move_cursor_home();
-            InputResult::None
-        }
-        KeyCode::End => {
-            state.move_cursor_end();
-            InputResult::None
-        }
         KeyCode::Esc => InputResult::Quit,
-        _ => InputResult::None,
+        _ => handle_text_editing_key(state, key.code),
     }
 }
 
@@ -193,6 +165,13 @@ fn handle_question_key(state: &mut TuiState, key: KeyEvent) -> InputResult {
             state.cursor_pos = 0;
             resolve_question(state, "[User declined to answer]".to_string())
         }
+        _ => handle_text_editing_key(state, key.code),
+    }
+}
+
+/// Handle common text editing keys shared between normal input and question modes.
+fn handle_text_editing_key(state: &mut TuiState, code: KeyCode) -> InputResult {
+    match code {
         KeyCode::Char(c) => {
             state.insert_char_at_cursor(c);
             InputResult::None
@@ -227,9 +206,8 @@ fn handle_question_key(state: &mut TuiState, key: KeyEvent) -> InputResult {
 
 /// Resolve the pending question by sending the answer via the oneshot channel.
 fn resolve_question(state: &mut TuiState, answer: String) -> InputResult {
-    if let Some(mut question) = state.pending_question.take() {
-        if let Some(responder) = question.responder.take() {
-            // Send answer back to the agent loop; ignore errors if the receiver dropped.
+    if let Some(question) = state.pending_question.take() {
+        if let Some(responder) = question.responder {
             let _ = responder.send(answer.clone());
         }
     }
@@ -238,9 +216,8 @@ fn resolve_question(state: &mut TuiState, answer: String) -> InputResult {
 
 /// Resolve the pending approval by sending the decision via the oneshot channel.
 fn resolve_approval(state: &mut TuiState, decision: ApprovalDecision) -> InputResult {
-    if let Some(mut approval) = state.pending_approval.take() {
-        if let Some(responder) = approval.responder.take() {
-            // Send decision back to the agent loop; ignore errors if the receiver dropped.
+    if let Some(approval) = state.pending_approval.take() {
+        if let Some(responder) = approval.responder {
             let _ = responder.send(decision);
         }
     }
@@ -527,15 +504,29 @@ mod tests {
     }
 
     #[test]
-    fn question_mode_scroll_up_down_still_work() {
+    fn question_mode_up_down_scroll_chat() {
         let (mut state, _rx) = make_question_state();
         state.scroll_offset = 2;
 
-        // Up/Down should scroll since question mode is checked after the
-        // streaming/approval scroll block. But question mode has its own
-        // routing, so Up/Down in question mode go to handle_question_key.
-        // The scroll check is handled before question mode in handle_key.
-        // Let's verify with PageUp/PageDown which always scroll.
+        // Up/Down should scroll the chat in question mode.
+        assert_eq!(
+            handle_key(&mut state, make_key(KeyCode::Up)),
+            InputResult::None
+        );
+        assert_eq!(state.scroll_offset, 3);
+
+        assert_eq!(
+            handle_key(&mut state, make_key(KeyCode::Down)),
+            InputResult::None
+        );
+        assert_eq!(state.scroll_offset, 2);
+    }
+
+    #[test]
+    fn question_mode_pageup_pagedown_scroll_chat() {
+        let (mut state, _rx) = make_question_state();
+        state.scroll_offset = 2;
+
         assert_eq!(
             handle_key(&mut state, make_key(KeyCode::PageUp)),
             InputResult::None

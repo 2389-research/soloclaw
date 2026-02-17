@@ -30,24 +30,16 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
         3 // fixed height when not editing
     } else {
         // +2 accounts for top and bottom borders
-        (state.input_line_count() as u16 + 2).max(3).min(MAX_INPUT_HEIGHT)
+        (state.input_line_count() as u16 + 2).clamp(3, MAX_INPUT_HEIGHT)
     };
 
     // Dynamic layout: insert a dedicated prompt area when approval or question is pending.
-    let constraints = if has_approval {
+    let constraints = if has_approval || has_question {
         vec![
             Constraint::Length(1),            // Header
             Constraint::Min(3),               // Chat area
-            Constraint::Length(3),            // Approval prompt (description + options + blank)
+            Constraint::Length(3),            // Approval/question prompt area
             Constraint::Length(input_height), // Input area
-            Constraint::Length(1),            // Status bar
-        ]
-    } else if has_question {
-        vec![
-            Constraint::Length(1),            // Header
-            Constraint::Min(3),               // Chat area
-            Constraint::Length(3),            // Question prompt (question + hint + blank)
-            Constraint::Length(input_height), // Input area (normal mode for typing)
             Constraint::Length(1),            // Status bar
         ]
     } else {

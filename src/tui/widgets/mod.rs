@@ -1,4 +1,4 @@
-// ABOUTME: TUI widget sub-modules for chat, status bar, and approval prompt.
+// ABOUTME: TUI widget sub-modules for chat, status bar, approval prompt, and question prompt.
 // ABOUTME: Each widget is a pure rendering function over TuiState.
 
 pub mod approval;

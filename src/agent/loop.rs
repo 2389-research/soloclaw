@@ -14,6 +14,7 @@ use mux::prelude::*;
 use crate::approval::{ApprovalDecision, ApprovalEngine, EngineOutcome, ToolCallInfo};
 use crate::session::SessionLogger;
 use crate::session::persistence::{SessionState, save_session};
+use crate::tools::ask_user::ASK_USER_TOOL_NAME;
 use crate::tui::state::{AgentEvent, UserEvent};
 
 /// Metadata tracked for a tool call being assembled from streaming events.
@@ -315,7 +316,7 @@ async fn execute_tool_calls(
         };
 
         // Intercept ask_user tool calls — bypass approval engine entirely.
-        if name == "ask_user" {
+        if name == ASK_USER_TOOL_NAME {
             let question = input
                 .get("question")
                 .and_then(|v| v.as_str())

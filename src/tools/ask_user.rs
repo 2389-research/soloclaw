@@ -4,13 +4,16 @@
 use async_trait::async_trait;
 use mux::prelude::*;
 
+/// The tool name used for both registration and interception in the agent loop.
+pub const ASK_USER_TOOL_NAME: &str = "ask_user";
+
 /// Tool that allows the LLM to ask the user a question and receive a free-text response.
 pub struct AskUserTool;
 
 #[async_trait]
 impl Tool for AskUserTool {
     fn name(&self) -> &str {
-        "ask_user"
+        ASK_USER_TOOL_NAME
     }
 
     fn description(&self) -> &str {
@@ -48,7 +51,8 @@ mod tests {
     #[test]
     fn tool_name_is_ask_user() {
         let tool = AskUserTool;
-        assert_eq!(tool.name(), "ask_user");
+        assert_eq!(tool.name(), ASK_USER_TOOL_NAME);
+        assert_eq!(ASK_USER_TOOL_NAME, "ask_user");
     }
 
     #[test]
