@@ -11,7 +11,9 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use mux::prelude::*;
 
+use crate::agent::compaction;
 use crate::approval::{ApprovalDecision, ApprovalEngine, EngineOutcome, ToolCallInfo};
+use crate::config::CompactionConfig;
 use crate::session::SessionLogger;
 use crate::session::persistence::{SessionState, save_session};
 use crate::tools::ask_user::ASK_USER_TOOL_NAME;
@@ -36,6 +38,7 @@ pub struct AgentLoopParams {
     pub initial_messages: Vec<Message>,
     pub session_logger: Option<Arc<Mutex<SessionLogger>>>,
     pub workspace_dir: PathBuf,
+    pub compaction_config: CompactionConfig,
 }
 
 /// Log a message via the session logger, if one is configured.
@@ -96,6 +99,48 @@ pub async fn run_agent_loop(
                 }
 
                 let _ = agent_tx.send(AgentEvent::Done).await;
+
+                // Check if compaction is needed after each complete turn.
+                if compaction::needs_compaction(
+                    &messages,
+                    &params.model,
+                    &params.compaction_config,
+                ) {
+                    let _ = agent_tx.send(AgentEvent::CompactionStarted).await;
+                    let old_count = messages.len();
+
+                    match compaction::run_compaction(
+                        &params.client,
+                        &params.model,
+                        params.max_tokens,
+                        &messages,
+                    )
+                    .await
+                    {
+                        Ok(summary_text) => {
+                            let user_messages = compaction::collect_user_messages(&messages);
+                            let compacted = compaction::build_compacted_history(
+                                &params.system_prompt,
+                                &user_messages,
+                                &summary_text,
+                                params.compaction_config.user_message_budget_tokens,
+                            );
+                            let new_count = compacted.len();
+                            messages = compacted;
+                            let _ = agent_tx
+                                .send(AgentEvent::CompactionDone {
+                                    old_count,
+                                    new_count,
+                                })
+                                .await;
+                        }
+                        Err(e) => {
+                            let _ = agent_tx
+                                .send(AgentEvent::Error(format!("Compaction failed: {}", e)))
+                                .await;
+                        }
+                    }
+                }
 
                 // Save session state after each complete turn.
                 save_session(
@@ -569,6 +614,7 @@ mod tests {
             let _: &Vec<Message> = &p.initial_messages;
             let _: &Option<Arc<Mutex<SessionLogger>>> = &p.session_logger;
             let _: &PathBuf = &p.workspace_dir;
+            let _: &CompactionConfig = &p.compaction_config;
         }
     }
 }

@@ -177,6 +177,7 @@ impl App {
                 initial_messages,
                 session_logger,
                 workspace_dir: workspace_path.clone(),
+                compaction_config: self.config.compaction.clone(),
             },
             user_rx,
             agent_tx,
@@ -473,6 +474,24 @@ fn handle_agent_event(state: &mut TuiState, event: AgentEvent) -> LoopAction {
         AgentEvent::Done => {
             state.streaming = false;
         }
+        AgentEvent::CompactionStarted => {
+            state.push_message(
+                ChatMessageKind::System,
+                "Compacting conversation...".to_string(),
+            );
+        }
+        AgentEvent::CompactionDone {
+            old_count,
+            new_count,
+        } => {
+            state.push_message(
+                ChatMessageKind::System,
+                format!(
+                    "Compacted: {} messages \u{2192} {} messages",
+                    old_count, new_count
+                ),
+            );
+        }
     }
 
     LoopAction::Continue
@@ -718,5 +737,30 @@ mod tests {
         let q = state.pending_question.take().unwrap();
         q.responder.unwrap().send("blue".to_string()).unwrap();
         assert_eq!(rx.blocking_recv().unwrap(), "blue");
+    }
+
+    #[test]
+    fn handle_agent_compaction_started() {
+        let mut state = TuiState::new("test-model".to_string(), 3);
+        handle_agent_event(&mut state, AgentEvent::CompactionStarted);
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages[0].kind, ChatMessageKind::System);
+        assert_eq!(state.messages[0].content, "Compacting conversation...");
+    }
+
+    #[test]
+    fn handle_agent_compaction_done() {
+        let mut state = TuiState::new("test-model".to_string(), 3);
+        handle_agent_event(
+            &mut state,
+            AgentEvent::CompactionDone {
+                old_count: 50,
+                new_count: 5,
+            },
+        );
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages[0].kind, ChatMessageKind::System);
+        assert!(state.messages[0].content.contains("50"));
+        assert!(state.messages[0].content.contains("5"));
     }
 }

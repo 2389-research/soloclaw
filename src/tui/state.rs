@@ -79,6 +79,10 @@ pub enum AgentEvent {
     Error(String),
     /// The agent loop finished processing.
     Done,
+    /// Compaction has started.
+    CompactionStarted,
+    /// Compaction is complete.
+    CompactionDone { old_count: usize, new_count: usize },
 }
 
 /// Events sent from the TUI to the agent loop.

@@ -21,6 +21,7 @@ pub struct Config {
     pub approval: ApprovalConfig,
     pub permissions: PermissionsConfig,
     pub skills: SkillsConfig,
+    pub compaction: CompactionConfig,
 }
 
 impl Default for Config {
@@ -30,6 +31,7 @@ impl Default for Config {
             approval: ApprovalConfig::default(),
             permissions: PermissionsConfig::default(),
             skills: SkillsConfig::default(),
+            compaction: CompactionConfig::default(),
         }
     }
 }
@@ -118,6 +120,28 @@ impl Default for PermissionsConfig {
     fn default() -> Self {
         Self {
             bypass_approvals: false,
+        }
+    }
+}
+
+/// Compaction configuration for automatic conversation summarization.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CompactionConfig {
+    /// Whether automatic compaction is enabled.
+    pub enabled: bool,
+    /// Override token limit triggering compaction (default: 90% of context window).
+    pub threshold_token_limit: Option<u64>,
+    /// Maximum tokens allocated for retained user messages after compaction.
+    pub user_message_budget_tokens: usize,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            threshold_token_limit: None,
+            user_message_budget_tokens: 20_000,
         }
     }
 }
@@ -484,6 +508,11 @@ include_codex_home = true
 max_files = 24
 max_file_bytes = 131072
 max_total_chars = 32000
+
+[compaction]
+enabled = true
+# threshold_token_limit = 180000
+user_message_budget_tokens = 20000
 "#
     .to_string()
 }
@@ -605,5 +634,35 @@ provider = "openai"
         assert_eq!(config.approval.timeout_seconds, 120);
         assert!(!config.permissions.bypass_approvals);
         assert!(config.skills.enabled);
+    }
+
+    #[test]
+    fn compaction_config_has_correct_defaults() {
+        let config = CompactionConfig::default();
+        assert!(config.enabled);
+        assert!(config.threshold_token_limit.is_none());
+        assert_eq!(config.user_message_budget_tokens, 20_000);
+    }
+
+    #[test]
+    fn compaction_config_parsed_from_toml() {
+        let toml_str = r#"
+[compaction]
+enabled = false
+threshold_token_limit = 100000
+user_message_budget_tokens = 10000
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(!config.compaction.enabled);
+        assert_eq!(config.compaction.threshold_token_limit, Some(100_000));
+        assert_eq!(config.compaction.user_message_budget_tokens, 10_000);
+    }
+
+    #[test]
+    fn default_config_includes_compaction_defaults() {
+        let config = Config::default();
+        assert!(config.compaction.enabled);
+        assert!(config.compaction.threshold_token_limit.is_none());
+        assert_eq!(config.compaction.user_message_budget_tokens, 20_000);
     }
 }
