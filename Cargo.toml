@@ -1,0 +1,24 @@
+[package]
+name = "simpleclaw"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mux = { path = "../mux-rs" }
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+anyhow = "1"
+dotenvy = "0.15"
+glob = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+futures = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
