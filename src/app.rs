@@ -88,16 +88,30 @@ impl App {
         let max_tokens = self.config.llm.max_tokens;
         let tool_count = registry.count().await;
 
-        // Temporary placeholder until dynamic builder is fully implemented.
+        // Gather runtime info and build the system prompt.
+        let workspace_dir = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+
+        let context_files = load_context_files(&workspace_dir);
+
+        // Collect tool names and summaries from the registry.
+        let tool_defs = registry.to_definitions().await;
+        let tool_names: Vec<String> = tool_defs.iter().map(|d| d.name.clone()).collect();
+        let tool_summaries: std::collections::HashMap<String, String> = tool_defs
+            .iter()
+            .map(|d| (d.name.clone(), d.description.clone()))
+            .collect();
+
         let system_prompt = build_system_prompt(&SystemPromptParams {
-            tool_names: vec![],
-            tool_summaries: std::collections::HashMap::new(),
-            workspace_dir: ".".to_string(),
-            os: String::new(),
-            arch: String::new(),
-            shell: String::new(),
+            tool_names,
+            tool_summaries,
+            workspace_dir,
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+            shell: std::env::var("SHELL").unwrap_or_default(),
             model: model.clone(),
-            context_files: vec![],
+            context_files,
         });
 
         // Spawn the agent loop in a background task.
