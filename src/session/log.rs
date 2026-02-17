@@ -40,28 +40,21 @@ impl SessionLogger {
     pub fn new(workspace_dir: &Path) -> anyhow::Result<Self> {
         let hash = workspace_hash(workspace_dir);
         let session_dir = Config::sessions_dir().join(&hash);
-        fs::create_dir_all(&session_dir)?;
-
-        let timestamp = Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
-        let log_path = session_dir.join(format!("{}.jsonl", timestamp));
-        let file = File::create(&log_path)?;
-        let writer = BufWriter::new(file);
-
-        Ok(Self {
-            writer,
-            session_dir,
-        })
+        Self::create_in_dir(&session_dir)
     }
 
     /// Create a session logger that writes to a specific directory (for testing).
     pub fn new_in_dir(session_dir: &Path) -> anyhow::Result<Self> {
-        fs::create_dir_all(session_dir)?;
+        Self::create_in_dir(session_dir)
+    }
 
+    /// Shared constructor: creates the directory and opens a timestamped JSONL file.
+    fn create_in_dir(session_dir: &Path) -> anyhow::Result<Self> {
+        fs::create_dir_all(session_dir)?;
         let timestamp = Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
         let log_path = session_dir.join(format!("{}.jsonl", timestamp));
         let file = File::create(&log_path)?;
         let writer = BufWriter::new(file);
-
         Ok(Self {
             writer,
             session_dir: session_dir.to_path_buf(),
