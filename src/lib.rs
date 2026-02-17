@@ -5,4 +5,5 @@ pub mod agent;
 pub mod app;
 pub mod approval;
 pub mod config;
+pub mod prompt;
 pub mod tui;
