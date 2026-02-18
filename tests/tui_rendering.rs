@@ -53,7 +53,7 @@ fn renders_empty_state() {
 }
 
 /// After pushing a User message, the rendered buffer should contain
-/// the "❯" prefix and the message text, confirming the full render
+/// the "💬" prefix and the message text, confirming the full render
 /// pipeline processes chat messages end-to-end.
 #[test]
 fn renders_user_message() {
@@ -69,8 +69,8 @@ fn renders_user_message() {
 
     let text = all_text(&terminal);
     assert!(
-        text.contains("❯"),
-        "rendered output should contain '❯', got:\n{}",
+        text.contains("💬"),
+        "rendered output should contain '💬', got:\n{}",
         text,
     );
     assert!(

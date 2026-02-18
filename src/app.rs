@@ -279,7 +279,7 @@ impl App {
             }
             state.push_message(
                 ChatMessageKind::System,
-                "Session resumed".to_string(),
+                "🔄 Session resumed".to_string(),
             );
         }
 
@@ -295,6 +295,9 @@ impl App {
             DisableBracketedPaste
         )?;
         terminal.show_cursor()?;
+
+        // Print farewell screen.
+        Self::print_exit_screen(&state);
 
         // Signal agent to quit and wait for it.
         let _ = user_tx.send(UserEvent::Quit).await;
@@ -377,6 +380,26 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Print a farewell screen after the TUI exits.
+    fn print_exit_screen(state: &TuiState) {
+        let elapsed_secs = state.session_start.elapsed().as_secs();
+        let elapsed = if elapsed_secs >= 3600 {
+            format!("{}h {:02}m", elapsed_secs / 3600, (elapsed_secs % 3600) / 60)
+        } else {
+            format!("{}m {:02}s", elapsed_secs / 60, elapsed_secs % 60)
+        };
+        let msg_count = state.messages.len();
+
+        println!();
+        println!("  🐾 \x1b[1mThanks for hanging out with soloclaw!\x1b[0m");
+        println!();
+        println!("  ✨ You showed up for AI today, and that's pretty cool.");
+        println!("  🕐 Session lasted {elapsed} with {msg_count} messages exchanged.");
+        println!();
+        println!("  💜 Until next time — keep building awesome things!");
+        println!();
     }
 }
 
@@ -498,7 +521,7 @@ fn handle_agent_event(state: &mut TuiState, event: AgentEvent) -> LoopAction {
             state.context_used = input_tokens as u64;
         }
         AgentEvent::Error(msg) => {
-            state.push_message(ChatMessageKind::System, format!("Error: {}", msg));
+            state.push_message(ChatMessageKind::System, format!("⚠️ Error: {}", msg));
             state.streaming = false;
         }
         AgentEvent::Done => {
@@ -511,7 +534,7 @@ fn handle_agent_event(state: &mut TuiState, event: AgentEvent) -> LoopAction {
         AgentEvent::CompactionStarted => {
             state.push_message(
                 ChatMessageKind::System,
-                "Compacting conversation...".to_string(),
+                "🗜️ Compacting conversation...".to_string(),
             );
         }
         AgentEvent::CompactionDone {
@@ -521,7 +544,7 @@ fn handle_agent_event(state: &mut TuiState, event: AgentEvent) -> LoopAction {
             state.push_message(
                 ChatMessageKind::System,
                 format!(
-                    "Compacted: {} messages \u{2192} {} messages",
+                    "✅ Compacted: {} messages \u{2192} {} messages",
                     old_count, new_count
                 ),
             );
@@ -824,7 +847,7 @@ mod tests {
         handle_agent_event(&mut state, AgentEvent::CompactionStarted);
         assert_eq!(state.messages.len(), 1);
         assert_eq!(state.messages[0].kind, ChatMessageKind::System);
-        assert_eq!(state.messages[0].content, "Compacting conversation...");
+        assert_eq!(state.messages[0].content, "🗜️ Compacting conversation...");
     }
 
     #[test]

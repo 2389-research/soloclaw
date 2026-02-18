@@ -22,7 +22,7 @@ pub fn render_chat_lines(messages: &[ChatMessage]) -> Vec<Line<'static>> {
             ChatMessageKind::User => {
                 lines.push(Line::from(vec![
                     Span::styled(
-                        "❯ ",
+                        "💬 ",
                         Style::default()
                             .fg(Color::Green)
                             .add_modifier(Modifier::BOLD),
@@ -37,7 +37,7 @@ pub fn render_chat_lines(messages: &[ChatMessage]) -> Vec<Line<'static>> {
                     if i == 0 {
                         lines.push(Line::from(vec![
                             Span::styled(
-                                "⏺ ",
+                                "🤖 ",
                                 Style::default()
                                     .fg(Color::Cyan)
                                     .add_modifier(Modifier::BOLD),
@@ -51,17 +51,18 @@ pub fn render_chat_lines(messages: &[ChatMessage]) -> Vec<Line<'static>> {
             }
             ChatMessageKind::ToolCall { tool_name, status } => {
                 let status_str = match status {
-                    ToolCallStatus::Allowed => "[allowed]",
-                    ToolCallStatus::Denied => "[denied]",
-                    ToolCallStatus::Pending => "[pending]",
-                    ToolCallStatus::TimedOut => "[timed out]",
+                    ToolCallStatus::Allowed => "✅",
+                    ToolCallStatus::Denied => "🚫",
+                    ToolCallStatus::Pending => "⏳",
+                    ToolCallStatus::TimedOut => "⏰",
                 };
                 lines.push(Line::from(Span::styled(
-                    format!("⚙ {}({}) {}", tool_name, msg.content, status_str),
+                    format!("🔧 {}({}) {}", tool_name, msg.content, status_str),
                     Style::default().fg(Color::Yellow),
                 )));
             }
             ChatMessageKind::ToolResult { is_error } => {
+                let prefix = if *is_error { "❌ " } else { "   " };
                 let style = if *is_error {
                     Style::default().fg(Color::Red)
                 } else {
@@ -70,8 +71,12 @@ pub fn render_chat_lines(messages: &[ChatMessage]) -> Vec<Line<'static>> {
                 let content_lines: Vec<&str> = msg.content.split('\n').collect();
                 let max_lines = 10;
                 let truncated = content_lines.len() > max_lines;
-                for text in content_lines.iter().take(max_lines) {
-                    lines.push(Line::from(Span::styled(format!("   {}", text), style)));
+                for (i, text) in content_lines.iter().take(max_lines).enumerate() {
+                    let line_prefix = if i == 0 { prefix } else { "   " };
+                    lines.push(Line::from(Span::styled(
+                        format!("{}{}", line_prefix, text),
+                        style,
+                    )));
                 }
                 if truncated {
                     lines.push(Line::from(Span::styled(
@@ -82,7 +87,7 @@ pub fn render_chat_lines(messages: &[ChatMessage]) -> Vec<Line<'static>> {
             }
             ChatMessageKind::System => {
                 lines.push(Line::from(Span::styled(
-                    format!("[system] {}", msg.content),
+                    format!("💡 {}", msg.content),
                     Style::default()
                         .fg(Color::DarkGray)
                         .add_modifier(Modifier::ITALIC),
@@ -116,7 +121,7 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let spans = &lines[0].spans;
         assert!(spans.len() >= 2);
-        assert_eq!(spans[0].content, "❯ ");
+        assert_eq!(spans[0].content, "💬 ");
         assert_eq!(spans[0].style.fg, Some(Color::Green));
     }
 
@@ -129,7 +134,7 @@ mod tests {
         let lines = render_chat_lines(&messages);
         assert_eq!(lines.len(), 1);
         let spans = &lines[0].spans;
-        assert_eq!(spans[0].content, "⏺ ");
+        assert_eq!(spans[0].content, "🤖 ");
         assert_eq!(spans[0].style.fg, Some(Color::Cyan));
     }
 
@@ -156,9 +161,9 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let spans = &lines[0].spans;
         assert_eq!(spans[0].style.fg, Some(Color::Yellow));
-        assert!(spans[0].content.contains("⚙"));
+        assert!(spans[0].content.contains("🔧"));
         assert!(spans[0].content.contains("bash"));
-        assert!(spans[0].content.contains("[allowed]"));
+        assert!(spans[0].content.contains("✅"));
     }
 
     #[test]

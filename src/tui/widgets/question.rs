@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 pub fn question_lines(question: &str) -> Vec<Line<'static>> {
     let header = Line::from(vec![
         Span::styled(
-            "QUESTION: ",
+            "❓ QUESTION: ",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -28,7 +28,7 @@ pub fn question_lines(question: &str) -> Vec<Line<'static>> {
 pub fn multichoice_lines(question: &str, options: &[String], selected: usize) -> Vec<Line<'static>> {
     let header = Line::from(vec![
         Span::styled(
-            "QUESTION: ",
+            "❓ QUESTION: ",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -84,7 +84,7 @@ mod tests {
             .iter()
             .map(|s| s.content.to_string())
             .collect();
-        assert!(header_text.contains("QUESTION:"));
+        assert!(header_text.contains("❓ QUESTION:"));
         assert!(header_text.contains("What color do you prefer?"));
     }
 
@@ -116,7 +116,7 @@ mod tests {
             .iter()
             .map(|s| s.content.to_string())
             .collect();
-        assert!(header_text.contains("QUESTION:"));
+        assert!(header_text.contains("❓ QUESTION:"));
     }
 
     // --- Multiple choice tests ---
@@ -137,7 +137,7 @@ mod tests {
             .iter()
             .map(|s| s.content.to_string())
             .collect();
-        assert!(header_text.contains("QUESTION:"));
+        assert!(header_text.contains("❓ QUESTION:"));
         assert!(header_text.contains("Continue?"));
     }
 

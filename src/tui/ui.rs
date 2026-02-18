@@ -71,7 +71,7 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
 
     // Header
     let header = Line::from(Span::styled(
-        " soloclaw",
+        " 🐾 soloclaw",
         Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
@@ -142,9 +142,9 @@ pub fn render(frame: &mut Frame, state: &mut TuiState) {
     // Show streaming/queued indicator in the input border title.
     if state.streaming {
         let title = if state.queued_message.is_some() {
-            " message queued "
+            " 📨 message queued "
         } else {
-            " streaming... "
+            " ⚡ streaming... "
         };
         input_block = input_block.title(Span::styled(
             title,

@@ -5,13 +5,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// The three approval options presented to the user.
-pub const APPROVAL_OPTIONS: &[&str] = &["Allow Once", "Always Allow", "Deny"];
+pub const APPROVAL_OPTIONS: &[&str] = &["✅ Allow Once", "🔓 Always Allow", "🚫 Deny"];
 
 /// Render the approval prompt as two Lines: description + selectable options.
 pub fn approval_line(description: &str, selected: usize) -> Vec<Line<'static>> {
     let header = Line::from(vec![
         Span::styled(
-            "APPROVE? ",
+            "🔐 APPROVE? ",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -59,7 +59,7 @@ mod tests {
             .iter()
             .map(|s| s.content.to_string())
             .collect();
-        assert!(header_text.contains("APPROVE?"));
+        assert!(header_text.contains("🔐 APPROVE?"));
         assert!(header_text.contains("run bash command"));
 
         // Options line should have all three options
@@ -68,9 +68,9 @@ mod tests {
             .iter()
             .map(|s| s.content.to_string())
             .collect();
-        assert!(options_text.contains("Allow Once"));
-        assert!(options_text.contains("Always Allow"));
-        assert!(options_text.contains("Deny"));
+        assert!(options_text.contains("✅ Allow Once"));
+        assert!(options_text.contains("🔓 Always Allow"));
+        assert!(options_text.contains("🚫 Deny"));
     }
 
     #[test]
@@ -87,7 +87,7 @@ mod tests {
         // Find the span for "Always Allow" (the selected one)
         let selected_span = option_spans
             .iter()
-            .find(|s| s.content.contains("Always Allow"))
+            .find(|s| s.content.contains("🔓 Always Allow"))
             .expect("should have Always Allow span");
         assert_eq!(selected_span.style.fg, Some(Color::Black));
         assert_eq!(selected_span.style.bg, Some(Color::Yellow));
