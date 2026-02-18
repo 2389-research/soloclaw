@@ -1,0 +1,17 @@
+Done:
+[x] session resume based on dir
+[x] logging of all messages
+[x] compaction
+[x] multiline input
+[x] AskAUser tool (with multiple choice support)
+[x] copy and paste (bracketed paste)
+[x] chat scroll fix — content never hidden under input
+[x] context size tracking
+[x] queued input during streaming
+[x] status bar: 📁 directory │ context bar │ ⏱ elapsed time
+[x] emojis throughout TUI + farewell exit screen
+
+Todo:
+heartbeat.md
+sidebar display tool
+MessageUser tool to talk to the user
