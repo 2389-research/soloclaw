@@ -54,9 +54,8 @@ pub fn context_window_for_model(model: &str) -> u64 {
         128_000
     } else if model.contains("gemini") {
         1_000_000
-    } else if model.contains("llama") {
-        128_000
     } else {
+        // Covers llama and other models; 128k is a safe default.
         128_000
     }
 }

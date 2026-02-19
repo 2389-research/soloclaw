@@ -165,6 +165,7 @@ pub async fn run_agent_loop(
 
 /// Execute one full conversation turn: stream LLM response, handle tool calls,
 /// and loop back if the LLM stopped due to tool use.
+#[allow(clippy::too_many_arguments)]
 async fn conversation_turn(
     client: &Arc<dyn LlmClient>,
     registry: &Registry,

@@ -370,7 +370,7 @@ impl Model for ClawApp {
             let has_options = self
                 .pending_question
                 .as_ref()
-                .map_or(false, |q| !q.options.is_empty());
+                .is_some_and(|q| !q.options.is_empty());
             if has_options { 4 } else { 3 }
         } else {
             0
@@ -506,12 +506,12 @@ impl ClawApp {
     /// Append text to the last assistant message, or create a new one if needed.
     /// Keeps scroll pinned to the bottom so new content is always visible.
     pub fn append_to_last_assistant(&mut self, text: &str) {
-        if let Some(msg) = self.messages.last_mut() {
-            if msg.kind == ChatMessageKind::Assistant {
-                msg.content.push_str(text);
-                self.scroll_offset = 0;
-                return;
-            }
+        if let Some(msg) = self.messages.last_mut()
+            && msg.kind == ChatMessageKind::Assistant
+        {
+            msg.content.push_str(text);
+            self.scroll_offset = 0;
+            return;
         }
         self.push_message(ChatMessageKind::Assistant, text.to_string());
     }
@@ -523,11 +523,10 @@ impl ClawApp {
                 tool_name: ref name,
                 ref mut status,
             } = msg.kind
+                && name == tool_name
             {
-                if name == tool_name {
-                    *status = new_status;
-                    return;
-                }
+                *status = new_status;
+                return;
             }
         }
     }
@@ -594,7 +593,7 @@ impl ClawApp {
         let has_options = self
             .pending_question
             .as_ref()
-            .map_or(false, |q| !q.options.is_empty());
+            .is_some_and(|q| !q.options.is_empty());
 
         if has_options {
             return self.handle_multichoice_key(key);
@@ -673,10 +672,10 @@ impl ClawApp {
 
     /// Resolve the pending question by sending the answer via the oneshot channel.
     fn resolve_question(&mut self, answer: String) {
-        if let Some(mut question) = self.pending_question.take() {
-            if let Some(responder) = question.responder.take() {
-                let _ = responder.send(answer);
-            }
+        if let Some(mut question) = self.pending_question.take()
+            && let Some(responder) = question.responder.take()
+        {
+            let _ = responder.send(answer);
         }
     }
 }

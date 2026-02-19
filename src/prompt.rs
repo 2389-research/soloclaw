@@ -95,13 +95,13 @@ pub fn load_context_files(workspace_dir: &str) -> Vec<ContextFile> {
 
     for name in &candidates {
         let path = dir.join(name);
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if !content.trim().is_empty() {
-                files.push(ContextFile {
-                    path: name.to_string(),
-                    content,
-                });
-            }
+        if let Ok(content) = std::fs::read_to_string(&path)
+            && !content.trim().is_empty()
+        {
+            files.push(ContextFile {
+                path: name.to_string(),
+                content,
+            });
         }
     }
 
@@ -121,10 +121,10 @@ pub fn load_skill_files(workspace_dir: &str, cfg: &SkillsConfig) -> Vec<SkillFil
     if cfg.include_workspace {
         roots.push(PathBuf::from(workspace_dir).join("skills"));
     }
-    if cfg.include_agents_home {
-        if let Some(home) = dirs::home_dir() {
-            roots.push(home.join(".agents").join("skills"));
-        }
+    if cfg.include_agents_home
+        && let Some(home) = dirs::home_dir()
+    {
+        roots.push(home.join(".agents").join("skills"));
     }
     if cfg.include_codex_home {
         if let Ok(codex_home) = std::env::var("CODEX_HOME") {
