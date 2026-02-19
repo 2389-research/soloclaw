@@ -6,8 +6,8 @@ use std::time::Instant;
 
 use boba::widgets::text_area;
 use boba::widgets::text_area::TextArea;
-use boba::{subscribe, terminal_events, Command, Model, Subscription, TerminalEvent};
-use crossterm::event::{KeyEvent, MouseEvent};
+use boba::{subscribe, terminal_events, Command, Component, Model, Subscription, TerminalEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use tokio::sync::{mpsc, Mutex};
 
@@ -16,6 +16,8 @@ use crate::tui::state::{
     UserEvent,
 };
 use crate::tui::subscriptions::AgentEventSource;
+
+const MOUSE_SCROLL_STEP: u16 = 3;
 
 /// Messages that drive the ClawApp update cycle.
 pub enum Msg {
@@ -224,11 +226,111 @@ impl Model for ClawApp {
                     Command::none()
                 }
             },
-            Msg::Key(_) => Command::none(),       // Filled in by Tasks 5-7
-            Msg::Mouse(_) => Command::none(),      // Filled in by Task 5
-            Msg::Paste(_) => Command::none(),      // Filled in by Task 5
-            Msg::Input(_) => Command::none(),      // Filled in by Task 5
-            Msg::MessageSent => Command::none(),   // Filled in by Task 5
+            Msg::Key(key) => {
+                // Ctrl+C always quits
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('c')
+                {
+                    return Command::quit();
+                }
+
+                // If pending approval or question, defer to Tasks 6-7
+                if self.pending_approval.is_some() || self.pending_question.is_some() {
+                    return Command::none();
+                }
+
+                match key.code {
+                    KeyCode::PageUp => {
+                        self.scroll_offset = self.scroll_offset.saturating_add(10);
+                        Command::none()
+                    }
+                    KeyCode::PageDown => {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(10);
+                        Command::none()
+                    }
+                    KeyCode::Up if self.streaming => {
+                        self.scroll_offset = self.scroll_offset.saturating_add(1);
+                        Command::none()
+                    }
+                    KeyCode::Down if self.streaming => {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        Command::none()
+                    }
+                    KeyCode::Up => {
+                        if self.input.cursor_row() == 0 {
+                            self.scroll_offset = self.scroll_offset.saturating_add(1);
+                            Command::none()
+                        } else {
+                            self.input
+                                .update(text_area::Message::KeyPress(key))
+                                .map(Msg::Input)
+                        }
+                    }
+                    KeyCode::Down => {
+                        if self.input.cursor_row()
+                            >= self.input.line_count().saturating_sub(1)
+                        {
+                            self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                            Command::none()
+                        } else {
+                            self.input
+                                .update(text_area::Message::KeyPress(key))
+                                .map(Msg::Input)
+                        }
+                    }
+                    KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        let text = self.input.value();
+                        if text.trim().is_empty() {
+                            return Command::none();
+                        }
+                        if self.streaming {
+                            self.queued_message = Some(text);
+                            self.input.set_value("");
+                            Command::none()
+                        } else {
+                            self.push_message(ChatMessageKind::User, text.clone());
+                            self.streaming = true;
+                            self.input.set_value("");
+                            self.send_message(text)
+                        }
+                    }
+                    KeyCode::Esc => {
+                        if self.streaming {
+                            Command::none()
+                        } else {
+                            Command::quit()
+                        }
+                    }
+                    _ => self
+                        .input
+                        .update(text_area::Message::KeyPress(key))
+                        .map(Msg::Input),
+                }
+            }
+            Msg::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    self.scroll_offset =
+                        self.scroll_offset.saturating_add(MOUSE_SCROLL_STEP);
+                    Command::none()
+                }
+                MouseEventKind::ScrollDown => {
+                    self.scroll_offset =
+                        self.scroll_offset.saturating_sub(MOUSE_SCROLL_STEP);
+                    Command::none()
+                }
+                _ => Command::none(),
+            },
+            Msg::Paste(text) => {
+                if self.pending_approval.is_some() {
+                    Command::none()
+                } else {
+                    self.input
+                        .update(text_area::Message::Paste(text))
+                        .map(Msg::Input)
+                }
+            }
+            Msg::Input(_) => Command::none(),
+            Msg::MessageSent => Command::none(),
         }
     }
 
@@ -582,6 +684,215 @@ mod tests {
         assert!(done_msg.content.contains("50"));
         assert!(done_msg.content.contains("10"));
         assert!(done_msg.content.contains("Compacted"));
+    }
+
+    // --- Key, Mouse, Paste handling tests (Task 5) ---
+
+    #[test]
+    fn key_esc_quits() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let cmd = app.update(Msg::Key(key));
+        assert!(!cmd.is_none());
+    }
+
+    #[test]
+    fn key_esc_during_streaming_does_nothing() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        app.streaming = true;
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let cmd = app.update(Msg::Key(key));
+        assert!(cmd.is_none());
+    }
+
+    #[test]
+    fn key_enter_sends_message() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        app.input.set_value("hello world");
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let cmd = app.update(Msg::Key(key));
+        assert!(!cmd.is_none());
+        assert!(app.streaming);
+        assert_eq!(app.input.value(), "");
+        // User message should have been pushed
+        let user_msgs: Vec<_> = app
+            .messages
+            .iter()
+            .filter(|m| m.kind == ChatMessageKind::User)
+            .collect();
+        assert_eq!(user_msgs.len(), 1);
+        assert_eq!(user_msgs[0].content, "hello world");
+    }
+
+    #[test]
+    fn key_enter_empty_does_nothing() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let cmd = app.update(Msg::Key(key));
+        assert!(cmd.is_none());
+        assert!(!app.streaming);
+    }
+
+    #[test]
+    fn key_enter_during_streaming_queues() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        app.streaming = true;
+        app.input.set_value("follow up");
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert_eq!(app.queued_message, Some("follow up".to_string()));
+        assert_eq!(app.input.value(), "");
+    }
+
+    #[test]
+    fn key_ctrl_c_quits() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let cmd = app.update(Msg::Key(key));
+        assert!(!cmd.is_none());
+    }
+
+    #[test]
+    fn key_pageup_scrolls() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let key = KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert_eq!(app.scroll_offset, 10);
+    }
+
+    #[test]
+    fn key_pagedown_scrolls() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        app.scroll_offset = 15;
+        let key = KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert_eq!(app.scroll_offset, 5);
+    }
+
+    #[test]
+    fn mouse_scroll_up() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let mouse = crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.update(Msg::Mouse(mouse));
+        assert_eq!(app.scroll_offset, MOUSE_SCROLL_STEP);
+    }
+
+    #[test]
+    fn mouse_scroll_down() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        app.scroll_offset = 10;
+        let mouse = crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.update(Msg::Mouse(mouse));
+        assert_eq!(app.scroll_offset, 10 - MOUSE_SCROLL_STEP);
+    }
+
+    #[test]
+    fn paste_inserts_text() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        app.update(Msg::Paste("pasted text".to_string()));
+        assert!(app.input.value().contains("pasted text"));
+    }
+
+    #[test]
+    fn paste_blocked_during_approval() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.pending_approval = Some(PendingApproval {
+            description: "test".to_string(),
+            pattern: None,
+            tool_name: "bash".to_string(),
+            selected: 0,
+            responder: Some(tx),
+        });
+        app.update(Msg::Paste("should not appear".to_string()));
+        assert!(!app.input.value().contains("should not appear"));
+    }
+
+    #[test]
+    fn key_up_on_first_line_scrolls_chat() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        // Input has a single line, cursor is on row 0
+        let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert_eq!(app.scroll_offset, 1);
+    }
+
+    #[test]
+    fn key_up_during_streaming_scrolls() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        app.streaming = true;
+        let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert_eq!(app.scroll_offset, 1);
+    }
+
+    #[test]
+    fn key_down_during_streaming_scrolls() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        app.streaming = true;
+        app.scroll_offset = 5;
+        let key = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert_eq!(app.scroll_offset, 4);
+    }
+
+    #[test]
+    fn msg_input_returns_none() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let cmd = app.update(Msg::Input(text_area::Message::KeyPress(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+        ))));
+        assert!(cmd.is_none());
+    }
+
+    #[test]
+    fn msg_message_sent_returns_none() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let cmd = app.update(Msg::MessageSent);
+        assert!(cmd.is_none());
+    }
+
+    #[test]
+    fn key_during_pending_approval_returns_none() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.pending_approval = Some(PendingApproval {
+            description: "test".to_string(),
+            pattern: None,
+            tool_name: "bash".to_string(),
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let cmd = app.update(Msg::Key(key));
+        assert!(cmd.is_none());
+    }
+
+    #[test]
+    fn key_during_pending_question_returns_none() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.pending_question = Some(PendingQuestion {
+            question: "test?".to_string(),
+            tool_call_id: "call-1".to_string(),
+            options: vec![],
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let cmd = app.update(Msg::Key(key));
+        assert!(cmd.is_none());
     }
 
     #[test]
