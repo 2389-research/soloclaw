@@ -3,6 +3,7 @@
 
 pub mod input;
 pub mod state;
+pub mod subscriptions;
 pub mod ui;
 pub mod widgets;
 
