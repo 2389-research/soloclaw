@@ -8,8 +8,17 @@ use boba::widgets::text_area;
 use boba::widgets::text_area::TextArea;
 use boba::{subscribe, terminal_events, Command, Component, Model, Subscription, TerminalEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use tokio::sync::{mpsc, Mutex};
+
+use crate::tui::widgets::approval::approval_line;
+use crate::tui::widgets::chat::render_chat_lines;
+use crate::tui::widgets::question::{multichoice_lines, question_lines};
+use crate::tui::widgets::status::{StatusBarParams, status_line};
 
 use crate::approval::ApprovalDecision;
 use crate::tui::state::{
@@ -338,8 +347,137 @@ impl Model for ClawApp {
         }
     }
 
-    fn view(&self, _frame: &mut Frame) {
-        // Filled in by Task 8
+    fn view(&self, frame: &mut Frame) {
+        let area = frame.area();
+        let has_approval = self.pending_approval.is_some();
+        let has_question = self.pending_question.is_some();
+
+        // Maximum height the input area can grow to (in terminal rows).
+        const MAX_INPUT_HEIGHT: u16 = 8;
+
+        // Calculate input height based on line count; fixed when approval is pending.
+        let input_height = if has_approval {
+            3
+        } else {
+            // +2 accounts for top and bottom borders of TextArea's block
+            (self.input.line_count() as u16 + 2).clamp(3, MAX_INPUT_HEIGHT)
+        };
+
+        // Compute prompt area height: approval/question prompt or multichoice needs more rows.
+        let prompt_height = if has_approval {
+            3
+        } else if has_question {
+            let has_options = self
+                .pending_question
+                .as_ref()
+                .map_or(false, |q| !q.options.is_empty());
+            if has_options { 4 } else { 3 }
+        } else {
+            0
+        };
+
+        // Dynamic layout: insert a dedicated prompt area when approval or question is pending.
+        let constraints = if has_approval || has_question {
+            vec![
+                Constraint::Length(1),                   // Header
+                Constraint::Min(3),                      // Chat area
+                Constraint::Length(prompt_height as u16), // Approval/question prompt
+                Constraint::Length(input_height),         // Input area
+                Constraint::Length(1),                    // Status bar
+            ]
+        } else {
+            vec![
+                Constraint::Length(1),            // Header
+                Constraint::Min(3),               // Chat area
+                Constraint::Length(input_height),  // Input area
+                Constraint::Length(1),             // Status bar
+            ]
+        };
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(area);
+
+        // 1. Header
+        let header = Line::from(Span::styled(
+            " \u{1f43e} claw",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ));
+        frame.render_widget(Paragraph::new(header), chunks[0]);
+
+        // 2. Chat area
+        let chat_lines = render_chat_lines(&self.messages);
+        let chat_chunk = chunks[1];
+        let visible_height = chat_chunk.height;
+
+        // Use ratatui's line_count() for accurate wrapped line count that
+        // matches its internal rendering, preventing scroll miscalculations.
+        let chat_paragraph = Paragraph::new(chat_lines).wrap(Wrap { trim: false });
+        let total_lines = chat_paragraph.line_count(chat_chunk.width) as u16;
+        let max_scroll = total_lines.saturating_sub(visible_height);
+
+        // Clamp scroll locally (view is &self, so we cannot mutate scroll_offset).
+        let clamped_offset = self.scroll_offset.min(max_scroll);
+
+        // scroll_offset is lines scrolled up from the bottom (0 = at bottom).
+        let scroll = max_scroll.saturating_sub(clamped_offset);
+
+        frame.render_widget(chat_paragraph.scroll((scroll, 0)), chat_chunk);
+
+        // 3. Approval or question prompt (only when pending)
+        let (input_chunk, status_chunk) = if has_approval {
+            if let Some(ref approval) = self.pending_approval {
+                let approval_lines = approval_line(&approval.description, approval.selected);
+                frame.render_widget(Paragraph::new(approval_lines), chunks[2]);
+            }
+            (chunks[3], chunks[4])
+        } else if has_question {
+            if let Some(ref question) = self.pending_question {
+                let q_lines = if question.options.is_empty() {
+                    question_lines(&question.question)
+                } else {
+                    multichoice_lines(&question.question, &question.options, question.selected)
+                };
+                frame.render_widget(Paragraph::new(q_lines), chunks[2]);
+            }
+            (chunks[3], chunks[4])
+        } else {
+            (chunks[2], chunks[3])
+        };
+
+        // 4. Input area
+        if has_approval {
+            // During approval: disabled input with yellow border.
+            let input_block = Block::default()
+                .borders(Borders::TOP | Borders::BOTTOM)
+                .border_style(Style::default().fg(Color::Yellow));
+            let inner = input_block.inner(input_chunk);
+            frame.render_widget(input_block, input_chunk);
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "(approve/deny the tool call above)",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                inner,
+            );
+        } else {
+            // Normal, streaming, and question modes use the boba TextArea.
+            // TextArea renders its own border and cursor.
+            self.input.view(frame, input_chunk);
+        }
+
+        // 5. Status bar
+        let status = status_line(&StatusBarParams {
+            workspace_dir: &self.workspace_dir,
+            context_used: self.context_used,
+            context_window: self.context_window,
+            session_start: self.session_start,
+            streaming: self.streaming,
+        });
+        frame.render_widget(Paragraph::new(status), status_chunk);
     }
 
     fn subscriptions(&self) -> Vec<Subscription<Msg>> {
@@ -1297,6 +1435,95 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE);
         app.update(Msg::Key(key));
         assert!(app.pending_question.is_some());
+    }
+
+    // --- view() rendering tests (Task 8) ---
+
+    #[test]
+    fn view_does_not_panic() {
+        let (app, _) = ClawApp::init(test_flags());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.view(frame)).unwrap();
+    }
+
+    #[test]
+    fn view_with_messages_does_not_panic() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        app.push_message(ChatMessageKind::User, "Hello".to_string());
+        app.push_message(ChatMessageKind::Assistant, "World".to_string());
+        app.streaming = true;
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.view(frame)).unwrap();
+    }
+
+    #[test]
+    fn view_with_approval_does_not_panic() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.pending_approval = Some(PendingApproval {
+            description: "bash(ls)".to_string(),
+            pattern: None,
+            tool_name: "bash".to_string(),
+            selected: 1,
+            responder: Some(tx),
+        });
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.view(frame)).unwrap();
+    }
+
+    #[test]
+    fn view_with_question_does_not_panic() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.pending_question = Some(PendingQuestion {
+            question: "Name?".to_string(),
+            tool_call_id: "c1".to_string(),
+            options: vec![],
+            selected: 0,
+            responder: Some(tx),
+        });
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.view(frame)).unwrap();
+    }
+
+    #[test]
+    fn view_with_multichoice_does_not_panic() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.pending_question = Some(PendingQuestion {
+            question: "Color?".to_string(),
+            tool_call_id: "c2".to_string(),
+            options: vec!["red".to_string(), "green".to_string()],
+            selected: 0,
+            responder: Some(tx),
+        });
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.view(frame)).unwrap();
+    }
+
+    #[test]
+    fn view_narrow_terminal_does_not_panic() {
+        let (app, _) = ClawApp::init(test_flags());
+        let backend = ratatui::backend::TestBackend::new(20, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.view(frame)).unwrap();
+    }
+
+    #[test]
+    fn renders_user_message() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        app.push_message(ChatMessageKind::User, "test input".to_string());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.view(frame)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let content: String = buffer.content.iter().map(|c| c.symbol().to_string()).collect();
+        assert!(content.contains("test input"), "Buffer should contain 'test input', got: {}", content);
     }
 
     #[test]
