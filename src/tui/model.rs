@@ -11,6 +11,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKi
 use ratatui::Frame;
 use tokio::sync::{mpsc, Mutex};
 
+use crate::approval::ApprovalDecision;
 use crate::tui::state::{
     AgentEvent, ChatMessage, ChatMessageKind, PendingApproval, PendingQuestion, ToolCallStatus,
     UserEvent,
@@ -234,9 +235,12 @@ impl Model for ClawApp {
                     return Command::quit();
                 }
 
-                // If pending approval or question, defer to Tasks 6-7
-                if self.pending_approval.is_some() || self.pending_question.is_some() {
-                    return Command::none();
+                // Route to approval/question mode handlers when active
+                if self.pending_approval.is_some() {
+                    return self.handle_approval_key(key);
+                }
+                if self.pending_question.is_some() {
+                    return self.handle_question_key(key);
                 }
 
                 match key.code {
@@ -399,6 +403,143 @@ impl ClawApp {
             },
             |_| Msg::MessageSent,
         )
+    }
+
+    /// Handle key events while a tool approval prompt is active.
+    fn handle_approval_key(&mut self, key: KeyEvent) -> Command<Msg> {
+        match key.code {
+            KeyCode::Left => {
+                if let Some(ref mut approval) = self.pending_approval {
+                    approval.selected = approval.selected.saturating_sub(1);
+                }
+                Command::none()
+            }
+            KeyCode::Right => {
+                if let Some(ref mut approval) = self.pending_approval {
+                    approval.selected = (approval.selected + 1).min(2);
+                }
+                Command::none()
+            }
+            KeyCode::Char('1') => self.resolve_approval(0),
+            KeyCode::Char('2') => self.resolve_approval(1),
+            KeyCode::Char('3') => self.resolve_approval(2),
+            KeyCode::Enter => {
+                let selected = self
+                    .pending_approval
+                    .as_ref()
+                    .map_or(0, |a| a.selected);
+                self.resolve_approval(selected)
+            }
+            _ => Command::none(),
+        }
+    }
+
+    /// Resolve the pending approval by mapping the selected index to a decision
+    /// and sending it via the oneshot channel.
+    fn resolve_approval(&mut self, selected: usize) -> Command<Msg> {
+        if let Some(mut approval) = self.pending_approval.take() {
+            let decision = match selected {
+                0 => ApprovalDecision::AllowOnce,
+                1 => ApprovalDecision::AllowAlways,
+                _ => ApprovalDecision::Deny,
+            };
+            if let Some(responder) = approval.responder.take() {
+                let _ = responder.send(decision);
+            }
+        }
+        Command::none()
+    }
+
+    /// Handle key events while a question prompt is active.
+    /// Dispatches to multichoice or free-text handling based on whether options exist.
+    fn handle_question_key(&mut self, key: KeyEvent) -> Command<Msg> {
+        let has_options = self
+            .pending_question
+            .as_ref()
+            .map_or(false, |q| !q.options.is_empty());
+
+        if has_options {
+            return self.handle_multichoice_key(key);
+        }
+
+        // Free-text question mode
+        match key.code {
+            KeyCode::Enter => {
+                let text = self.input.value();
+                self.input.set_value("");
+                self.resolve_question(text);
+                Command::none()
+            }
+            KeyCode::Esc => {
+                self.resolve_question("[User declined to answer]".to_string());
+                Command::none()
+            }
+            _ => self
+                .input
+                .update(text_area::Message::KeyPress(key))
+                .map(Msg::Input),
+        }
+    }
+
+    /// Handle key events for multiple-choice question mode.
+    fn handle_multichoice_key(&mut self, key: KeyEvent) -> Command<Msg> {
+        match key.code {
+            KeyCode::Left => {
+                if let Some(ref mut q) = self.pending_question {
+                    q.selected = q.selected.saturating_sub(1);
+                }
+                Command::none()
+            }
+            KeyCode::Right => {
+                if let Some(ref mut q) = self.pending_question {
+                    let max = q.options.len().saturating_sub(1);
+                    q.selected = (q.selected + 1).min(max);
+                }
+                Command::none()
+            }
+            KeyCode::Enter => {
+                let answer = self
+                    .pending_question
+                    .as_ref()
+                    .and_then(|q| q.options.get(q.selected).cloned())
+                    .unwrap_or_default();
+                self.resolve_question(answer);
+                Command::none()
+            }
+            KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                let idx = (c as usize) - ('1' as usize);
+                let option_count = self
+                    .pending_question
+                    .as_ref()
+                    .map_or(0, |q| q.options.len());
+                if idx < option_count {
+                    if let Some(ref mut q) = self.pending_question {
+                        q.selected = idx;
+                    }
+                    let answer = self
+                        .pending_question
+                        .as_ref()
+                        .and_then(|q| q.options.get(q.selected).cloned())
+                        .unwrap_or_default();
+                    self.resolve_question(answer);
+                }
+                Command::none()
+            }
+            KeyCode::Esc => {
+                self.resolve_question("[User declined to answer]".to_string());
+                Command::none()
+            }
+            _ => Command::none(),
+        }
+    }
+
+    /// Resolve the pending question by sending the answer via the oneshot channel.
+    fn resolve_question(&mut self, answer: String) {
+        if let Some(mut question) = self.pending_question.take() {
+            if let Some(responder) = question.responder.take() {
+                let _ = responder.send(answer);
+            }
+        }
     }
 }
 
@@ -864,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn key_during_pending_approval_returns_none() {
+    fn non_actionable_key_during_pending_approval_returns_none() {
         let (mut app, _) = ClawApp::init(test_flags());
         let (tx, _rx) = tokio::sync::oneshot::channel();
         app.pending_approval = Some(PendingApproval {
@@ -874,25 +1015,288 @@ mod tests {
             selected: 0,
             responder: Some(tx),
         });
-        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let key = KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE);
         let cmd = app.update(Msg::Key(key));
         assert!(cmd.is_none());
+        // Approval should still be pending
+        assert!(app.pending_approval.is_some());
     }
 
     #[test]
-    fn key_during_pending_question_returns_none() {
+    fn non_actionable_key_during_pending_question_returns_none() {
         let (mut app, _) = ClawApp::init(test_flags());
         let (tx, _rx) = tokio::sync::oneshot::channel();
         app.pending_question = Some(PendingQuestion {
             question: "test?".to_string(),
             tool_call_id: "call-1".to_string(),
-            options: vec![],
+            options: vec!["a".to_string(), "b".to_string()],
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE);
+        let cmd = app.update(Msg::Key(key));
+        assert!(cmd.is_none());
+        // Question should still be pending
+        assert!(app.pending_question.is_some());
+    }
+
+    // --- Approval mode tests (Task 6) ---
+
+    use crate::approval::ApprovalDecision;
+
+    #[test]
+    fn approval_enter_sends_allow_once() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.pending_approval = Some(PendingApproval {
+            description: "bash(ls)".to_string(),
+            pattern: None,
+            tool_name: "bash".to_string(),
             selected: 0,
             responder: Some(tx),
         });
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        let cmd = app.update(Msg::Key(key));
-        assert!(cmd.is_none());
+        app.update(Msg::Key(key));
+        assert!(app.pending_approval.is_none());
+        assert_eq!(rx.blocking_recv().unwrap(), ApprovalDecision::AllowOnce);
+    }
+
+    #[test]
+    fn approval_char_2_sends_allow_always() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.pending_approval = Some(PendingApproval {
+            description: "test".to_string(),
+            pattern: None,
+            tool_name: "bash".to_string(),
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert!(app.pending_approval.is_none());
+        assert_eq!(rx.blocking_recv().unwrap(), ApprovalDecision::AllowAlways);
+    }
+
+    #[test]
+    fn approval_char_3_sends_deny() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.pending_approval = Some(PendingApproval {
+            description: "test".to_string(),
+            pattern: None,
+            tool_name: "bash".to_string(),
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert!(app.pending_approval.is_none());
+        assert_eq!(rx.blocking_recv().unwrap(), ApprovalDecision::Deny);
+    }
+
+    #[test]
+    fn approval_right_arrow_navigates() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.pending_approval = Some(PendingApproval {
+            description: "test".to_string(),
+            pattern: None,
+            tool_name: "bash".to_string(),
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert_eq!(app.pending_approval.as_ref().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn approval_left_arrow_clamps_at_zero() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.pending_approval = Some(PendingApproval {
+            description: "test".to_string(),
+            pattern: None,
+            tool_name: "bash".to_string(),
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert_eq!(app.pending_approval.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn approval_right_clamps_at_2() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.pending_approval = Some(PendingApproval {
+            description: "test".to_string(),
+            pattern: None,
+            tool_name: "bash".to_string(),
+            selected: 2,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert_eq!(app.pending_approval.as_ref().unwrap().selected, 2);
+    }
+
+    // --- Question mode tests (Task 7) ---
+
+    #[test]
+    fn question_freetext_enter_sends_answer() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.pending_question = Some(PendingQuestion {
+            question: "Name?".to_string(),
+            tool_call_id: "c1".to_string(),
+            options: vec![],
+            selected: 0,
+            responder: Some(tx),
+        });
+        app.input.set_value("Alice");
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert!(app.pending_question.is_none());
+        assert_eq!(rx.blocking_recv().unwrap(), "Alice");
+        assert_eq!(app.input.value(), "");
+    }
+
+    #[test]
+    fn question_freetext_esc_dismisses() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.pending_question = Some(PendingQuestion {
+            question: "Name?".to_string(),
+            tool_call_id: "c1".to_string(),
+            options: vec![],
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert!(app.pending_question.is_none());
+        assert_eq!(rx.blocking_recv().unwrap(), "[User declined to answer]");
+    }
+
+    #[test]
+    fn question_freetext_typing_goes_to_textarea() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.pending_question = Some(PendingQuestion {
+            question: "Name?".to_string(),
+            tool_call_id: "c1".to_string(),
+            options: vec![],
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Char('B'), KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert!(app.input.value().contains("B"));
+        // Question should still be pending
+        assert!(app.pending_question.is_some());
+    }
+
+    #[test]
+    fn question_multichoice_enter_selects_first() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.pending_question = Some(PendingQuestion {
+            question: "Color?".to_string(),
+            tool_call_id: "c2".to_string(),
+            options: vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert!(app.pending_question.is_none());
+        assert_eq!(rx.blocking_recv().unwrap(), "red");
+    }
+
+    #[test]
+    fn question_multichoice_number_key_selects() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.pending_question = Some(PendingQuestion {
+            question: "Color?".to_string(),
+            tool_call_id: "c2".to_string(),
+            options: vec!["red".to_string(), "green".to_string(), "blue".to_string()],
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert!(app.pending_question.is_none());
+        assert_eq!(rx.blocking_recv().unwrap(), "green");
+    }
+
+    #[test]
+    fn question_multichoice_arrows_navigate() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.pending_question = Some(PendingQuestion {
+            question: "Color?".to_string(),
+            tool_call_id: "c3".to_string(),
+            options: vec!["red".to_string(), "green".to_string()],
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert_eq!(app.pending_question.as_ref().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn question_multichoice_esc_dismisses() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.pending_question = Some(PendingQuestion {
+            question: "Color?".to_string(),
+            tool_call_id: "c2".to_string(),
+            options: vec!["red".to_string(), "green".to_string()],
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert!(app.pending_question.is_none());
+        assert_eq!(rx.blocking_recv().unwrap(), "[User declined to answer]");
+    }
+
+    #[test]
+    fn question_multichoice_typing_ignored() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.pending_question = Some(PendingQuestion {
+            question: "Color?".to_string(),
+            tool_call_id: "c2".to_string(),
+            options: vec!["red".to_string(), "green".to_string()],
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert_eq!(app.input.value(), "");
+        assert!(app.pending_question.is_some());
+    }
+
+    #[test]
+    fn question_multichoice_number_out_of_range_ignored() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.pending_question = Some(PendingQuestion {
+            question: "Color?".to_string(),
+            tool_call_id: "c2".to_string(),
+            options: vec!["red".to_string(), "green".to_string()],
+            selected: 0,
+            responder: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert!(app.pending_question.is_some());
     }
 
     #[test]
