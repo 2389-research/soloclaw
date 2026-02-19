@@ -140,6 +140,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
+name = "boba"
+version = "0.1.0"
+dependencies = [
+ "boba-core",
+ "boba-widgets",
+ "crossterm",
+ "ratatui",
+ "tokio",
+]
+
+[[package]]
+name = "boba-core"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "futures",
+ "libc",
+ "ratatui",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
+name = "boba-widgets"
+version = "0.1.0"
+dependencies = [
+ "boba-core",
+ "crossterm",
+ "ratatui",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -276,6 +309,7 @@ checksum = "829d955a0bb380ef178a640b91779e3987da38c9aea133b20614cfed8cdea9c6"
 dependencies = [
  "bitflags",
  "crossterm_winapi",
+ "futures-core",
  "mio",
  "parking_lot",
  "rustix 0.38.44",
@@ -1552,6 +1586,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "boba",
  "chrono",
  "clap",
  "crossterm",
@@ -1565,6 +1600,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "toml",
  "unicode-width 0.2.0",
 ]
@@ -1759,6 +1795,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-stream"
+version = "0.1.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32da49809aab5c3bc678af03902d4ccddea2a87d028d86392a4b1560c6906c70"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
  "tokio",
 ]
 
