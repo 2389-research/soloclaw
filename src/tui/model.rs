@@ -12,7 +12,8 @@ use ratatui::Frame;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::tui::state::{
-    AgentEvent, ChatMessage, ChatMessageKind, PendingApproval, PendingQuestion, UserEvent,
+    AgentEvent, ChatMessage, ChatMessageKind, PendingApproval, PendingQuestion, ToolCallStatus,
+    UserEvent,
 };
 use crate::tui::subscriptions::AgentEventSource;
 
@@ -103,8 +104,132 @@ impl Model for ClawApp {
         (app, Command::none())
     }
 
-    fn update(&mut self, _msg: Msg) -> Command<Msg> {
-        Command::none() // Filled in by Tasks 4-7
+    fn update(&mut self, msg: Msg) -> Command<Msg> {
+        match msg {
+            Msg::Agent(event) => match event {
+                AgentEvent::TextDelta(text) => {
+                    self.append_to_last_assistant(&text);
+                    Command::none()
+                }
+                AgentEvent::TextDone => Command::none(),
+                AgentEvent::ToolCallStarted {
+                    tool_name,
+                    params_summary,
+                } => {
+                    let content = format!("{}({})", tool_name, params_summary);
+                    self.push_message(
+                        ChatMessageKind::ToolCall {
+                            tool_name,
+                            status: ToolCallStatus::Pending,
+                        },
+                        content,
+                    );
+                    Command::none()
+                }
+                AgentEvent::ToolCallApproved { tool_name } => {
+                    self.update_tool_status(&tool_name, ToolCallStatus::Allowed);
+                    Command::none()
+                }
+                AgentEvent::ToolCallNeedsApproval {
+                    description,
+                    pattern,
+                    tool_name,
+                    responder,
+                } => {
+                    self.pending_approval = Some(PendingApproval {
+                        description,
+                        pattern,
+                        tool_name,
+                        selected: 0,
+                        responder: Some(responder),
+                    });
+                    self.scroll_offset = 0;
+                    Command::none()
+                }
+                AgentEvent::AskUser {
+                    question,
+                    tool_call_id,
+                    options,
+                    responder,
+                } => {
+                    self.pending_question = Some(PendingQuestion {
+                        question,
+                        tool_call_id,
+                        options,
+                        selected: 0,
+                        responder: Some(responder),
+                    });
+                    self.scroll_offset = 0;
+                    Command::none()
+                }
+                AgentEvent::ToolCallDenied { tool_name, reason } => {
+                    self.update_tool_status(&tool_name, ToolCallStatus::Denied);
+                    self.push_message(
+                        ChatMessageKind::System,
+                        format!("Tool '{}' denied: {}", tool_name, reason),
+                    );
+                    Command::none()
+                }
+                AgentEvent::ToolResult {
+                    tool_name: _,
+                    content,
+                    is_error,
+                } => {
+                    self.push_message(ChatMessageKind::ToolResult { is_error }, content);
+                    Command::none()
+                }
+                AgentEvent::Usage {
+                    input_tokens,
+                    output_tokens,
+                } => {
+                    self.total_tokens += (input_tokens + output_tokens) as u64;
+                    self.context_used = input_tokens as u64;
+                    Command::none()
+                }
+                AgentEvent::Error(msg) => {
+                    self.push_message(
+                        ChatMessageKind::System,
+                        format!("\u{26a0}\u{fe0f} Error: {}", msg),
+                    );
+                    self.streaming = false;
+                    Command::none()
+                }
+                AgentEvent::Done => {
+                    self.streaming = false;
+                    if let Some(queued) = self.queued_message.take() {
+                        self.push_message(ChatMessageKind::User, queued.clone());
+                        self.streaming = true;
+                        return self.send_message(queued);
+                    }
+                    Command::none()
+                }
+                AgentEvent::CompactionStarted => {
+                    self.push_message(
+                        ChatMessageKind::System,
+                        "\u{1f5dc}\u{fe0f} Compacting conversation...".to_string(),
+                    );
+                    Command::none()
+                }
+                AgentEvent::CompactionDone {
+                    old_count,
+                    new_count,
+                } => {
+                    self.push_message(
+                        ChatMessageKind::System,
+                        format!(
+                            "\u{2705} Compacted: {} messages \u{2192} {} messages",
+                            old_count, new_count
+                        ),
+                    );
+                    Command::none()
+                }
+            },
+            Msg::Key(_) => Command::none(),       // Filled in by Tasks 5-7
+            Msg::Mouse(_) => Command::none(),      // Filled in by Task 5
+            Msg::Paste(_) => Command::none(),      // Filled in by Task 5
+            Msg::Input(_) => Command::none(),      // Filled in by Task 5
+            Msg::MessageSent => Command::none(),   // Filled in by Task 5
+        }
     }
 
     fn view(&self, _frame: &mut Frame) {
@@ -145,6 +270,22 @@ impl ClawApp {
             }
         }
         self.push_message(ChatMessageKind::Assistant, text.to_string());
+    }
+
+    /// Update the status of the most recent tool call message matching the given tool name.
+    fn update_tool_status(&mut self, tool_name: &str, new_status: ToolCallStatus) {
+        for msg in self.messages.iter_mut().rev() {
+            if let ChatMessageKind::ToolCall {
+                tool_name: ref name,
+                ref mut status,
+            } = msg.kind
+            {
+                if name == tool_name {
+                    *status = new_status;
+                    return;
+                }
+            }
+        }
     }
 
     /// Send a user message to the agent loop via the mpsc channel.
@@ -266,5 +407,220 @@ mod tests {
         assert_eq!(app.messages[2].content, "replayed assistant msg");
         assert_eq!(app.messages[3].kind, ChatMessageKind::System);
         assert!(app.messages[3].content.contains("Session resumed"));
+    }
+
+    // --- Agent event update() tests ---
+
+    #[test]
+    fn update_text_delta_appends() {
+        let (mut app, _cmd) = ClawApp::init(test_flags());
+
+        app.update(Msg::Agent(AgentEvent::TextDelta("Hello".to_string())));
+        app.update(Msg::Agent(AgentEvent::TextDelta(" world".to_string())));
+
+        // Startup message + one assistant message
+        assert_eq!(app.messages.len(), 2);
+        assert_eq!(app.messages[1].kind, ChatMessageKind::Assistant);
+        assert_eq!(app.messages[1].content, "Hello world");
+    }
+
+    #[test]
+    fn update_done_stops_streaming() {
+        let (mut app, _cmd) = ClawApp::init(test_flags());
+        app.streaming = true;
+
+        let cmd = app.update(Msg::Agent(AgentEvent::Done));
+
+        assert!(!app.streaming);
+        assert!(cmd.is_none());
+    }
+
+    #[test]
+    fn update_done_sends_queued_message() {
+        let (mut app, _cmd) = ClawApp::init(test_flags());
+        app.streaming = true;
+        app.queued_message = Some("follow up".to_string());
+
+        let cmd = app.update(Msg::Agent(AgentEvent::Done));
+
+        assert!(app.streaming); // re-set to true for the queued send
+        assert!(app.queued_message.is_none());
+        assert!(!cmd.is_none()); // should have returned a send command
+        // The queued message should have been pushed as a User message
+        let user_msgs: Vec<_> = app
+            .messages
+            .iter()
+            .filter(|m| m.kind == ChatMessageKind::User)
+            .collect();
+        assert_eq!(user_msgs.len(), 1);
+        assert_eq!(user_msgs[0].content, "follow up");
+    }
+
+    #[test]
+    fn update_error_stops_streaming() {
+        let (mut app, _cmd) = ClawApp::init(test_flags());
+        app.streaming = true;
+
+        app.update(Msg::Agent(AgentEvent::Error("oops".to_string())));
+
+        assert!(!app.streaming);
+        let last = app.messages.last().unwrap();
+        assert_eq!(last.kind, ChatMessageKind::System);
+        assert!(last.content.contains("oops"));
+    }
+
+    #[test]
+    fn update_tool_call_started() {
+        let (mut app, _cmd) = ClawApp::init(test_flags());
+
+        app.update(Msg::Agent(AgentEvent::ToolCallStarted {
+            tool_name: "read_file".to_string(),
+            params_summary: "path=/tmp".to_string(),
+        }));
+
+        let last = app.messages.last().unwrap();
+        assert_eq!(
+            last.kind,
+            ChatMessageKind::ToolCall {
+                tool_name: "read_file".to_string(),
+                status: ToolCallStatus::Pending,
+            }
+        );
+        assert_eq!(last.content, "read_file(path=/tmp)");
+    }
+
+    #[test]
+    fn update_tool_approved_updates_status() {
+        let (mut app, _cmd) = ClawApp::init(test_flags());
+
+        app.update(Msg::Agent(AgentEvent::ToolCallStarted {
+            tool_name: "write_file".to_string(),
+            params_summary: "path=/tmp".to_string(),
+        }));
+        app.update(Msg::Agent(AgentEvent::ToolCallApproved {
+            tool_name: "write_file".to_string(),
+        }));
+
+        let last = app.messages.last().unwrap();
+        assert_eq!(
+            last.kind,
+            ChatMessageKind::ToolCall {
+                tool_name: "write_file".to_string(),
+                status: ToolCallStatus::Allowed,
+            }
+        );
+    }
+
+    #[test]
+    fn update_needs_approval_sets_pending() {
+        let (mut app, _cmd) = ClawApp::init(test_flags());
+        app.scroll_offset = 5;
+
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.update(Msg::Agent(AgentEvent::ToolCallNeedsApproval {
+            description: "Write to disk".to_string(),
+            pattern: Some("write_*".to_string()),
+            tool_name: "write_file".to_string(),
+            responder: tx,
+        }));
+
+        assert!(app.pending_approval.is_some());
+        let approval = app.pending_approval.as_ref().unwrap();
+        assert_eq!(approval.description, "Write to disk");
+        assert_eq!(approval.tool_name, "write_file");
+        assert_eq!(approval.pattern, Some("write_*".to_string()));
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn update_ask_user_sets_pending_question() {
+        let (mut app, _cmd) = ClawApp::init(test_flags());
+
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.update(Msg::Agent(AgentEvent::AskUser {
+            question: "What is your name?".to_string(),
+            tool_call_id: "call-42".to_string(),
+            options: vec!["Alice".to_string(), "Bob".to_string()],
+            responder: tx,
+        }));
+
+        assert!(app.pending_question.is_some());
+        let q = app.pending_question.as_ref().unwrap();
+        assert_eq!(q.question, "What is your name?");
+        assert_eq!(q.tool_call_id, "call-42");
+        assert_eq!(q.options, vec!["Alice", "Bob"]);
+    }
+
+    #[test]
+    fn update_usage_tracks_tokens() {
+        let (mut app, _cmd) = ClawApp::init(test_flags());
+
+        app.update(Msg::Agent(AgentEvent::Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+        }));
+
+        assert_eq!(app.total_tokens, 150);
+        assert_eq!(app.context_used, 100);
+    }
+
+    #[test]
+    fn update_compaction_messages() {
+        let (mut app, _cmd) = ClawApp::init(test_flags());
+
+        app.update(Msg::Agent(AgentEvent::CompactionStarted));
+        let compacting_msg = app.messages.last().unwrap();
+        assert_eq!(compacting_msg.kind, ChatMessageKind::System);
+        assert!(compacting_msg.content.contains("Compacting"));
+
+        app.update(Msg::Agent(AgentEvent::CompactionDone {
+            old_count: 50,
+            new_count: 10,
+        }));
+        let done_msg = app.messages.last().unwrap();
+        assert_eq!(done_msg.kind, ChatMessageKind::System);
+        assert!(done_msg.content.contains("50"));
+        assert!(done_msg.content.contains("10"));
+        assert!(done_msg.content.contains("Compacted"));
+    }
+
+    #[test]
+    fn update_tool_denied() {
+        let (mut app, _cmd) = ClawApp::init(test_flags());
+
+        app.update(Msg::Agent(AgentEvent::ToolCallStarted {
+            tool_name: "rm_rf".to_string(),
+            params_summary: "path=/".to_string(),
+        }));
+        app.update(Msg::Agent(AgentEvent::ToolCallDenied {
+            tool_name: "rm_rf".to_string(),
+            reason: "too dangerous".to_string(),
+        }));
+
+        // The tool call message should now have Denied status
+        let tool_msg = app
+            .messages
+            .iter()
+            .find(|m| {
+                matches!(
+                    &m.kind,
+                    ChatMessageKind::ToolCall { tool_name, .. } if tool_name == "rm_rf"
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            tool_msg.kind,
+            ChatMessageKind::ToolCall {
+                tool_name: "rm_rf".to_string(),
+                status: ToolCallStatus::Denied,
+            }
+        );
+
+        // A system message about the denial should have been pushed
+        let denial_msg = app.messages.last().unwrap();
+        assert_eq!(denial_msg.kind, ChatMessageKind::System);
+        assert!(denial_msg.content.contains("rm_rf"));
+        assert!(denial_msg.content.contains("denied"));
+        assert!(denial_msg.content.contains("too dangerous"));
     }
 }
