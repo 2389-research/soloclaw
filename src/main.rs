@@ -6,7 +6,7 @@ use soloclaw::{app, config};
 
 /// TUI agent with layered tool approval.
 #[derive(Parser)]
-#[command(name = "soloclaw", about = "TUI agent with layered tool approval")]
+#[command(name = "claw", about = "TUI agent with layered tool approval")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
