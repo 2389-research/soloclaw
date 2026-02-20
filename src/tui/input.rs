@@ -4,7 +4,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::approval::ApprovalDecision;
-use crate::tui::state::TuiState;
+use crate::tui::state::{ChatMessageKind, TuiState};
 use crate::tui::widgets::approval::APPROVAL_OPTIONS;
 
 /// The result of processing a key event.
@@ -285,8 +285,14 @@ fn handle_text_editing_key(state: &mut TuiState, code: KeyCode) -> InputResult {
 }
 
 /// Resolve the pending question by sending the answer via the oneshot channel.
+/// Pushes the question and answer into chat so the conversation reads naturally.
 fn resolve_question(state: &mut TuiState, answer: String) -> InputResult {
     if let Some(question) = state.pending_question.take() {
+        state.push_message(
+            ChatMessageKind::System,
+            format!("🤖 Question: {}", question.question),
+        );
+        state.push_message(ChatMessageKind::User, answer.clone());
         if let Some(responder) = question.responder {
             let _ = responder.send(answer.clone());
         }

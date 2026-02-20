@@ -323,36 +323,25 @@ impl App {
             // Draw the current state.
             terminal.draw(|frame| render(frame, state))?;
 
-            // Poll for crossterm events (50ms timeout).
+            // Wait for at least one terminal event (50ms timeout).
             if event::poll(Duration::from_millis(50))? {
-                match event::read()? {
-                    Event::Key(key) => match handle_key_event(state, key, user_tx).await {
-                        LoopAction::Continue => {}
-                        LoopAction::Quit => break,
-                        LoopAction::SendQueued(text) => {
-                            state.push_message(ChatMessageKind::User, text.clone());
-                            state.streaming = true;
-                            let _ = user_tx.send(UserEvent::Message(text)).await;
-                        }
-                    },
-                    Event::Mouse(mouse) => match mouse.kind {
-                        MouseEventKind::ScrollUp => {
-                            state.scroll_offset =
-                                state.scroll_offset.saturating_add(MOUSE_SCROLL_STEP);
-                        }
-                        MouseEventKind::ScrollDown => {
-                            state.scroll_offset =
-                                state.scroll_offset.saturating_sub(MOUSE_SCROLL_STEP);
-                        }
-                        _ => {}
-                    },
-                    Event::Paste(text) => {
-                        if !state.has_pending_approval() {
-                            // Allow pasting in normal input, question mode, and streaming.
-                            state.insert_str_at_cursor(&text);
-                        }
+                // Drain ALL pending terminal events before redrawing.
+                // Without this, mouse motion events from EnableMouseCapture
+                // flood the queue and starve keyboard input.
+                loop {
+                    let quit = Self::process_terminal_event(
+                        event::read()?,
+                        state,
+                        user_tx,
+                    )
+                    .await;
+                    if quit {
+                        return Ok(());
                     }
-                    _ => {}
+                    // Keep draining while more events are immediately available.
+                    if !event::poll(Duration::ZERO)? {
+                        break;
+                    }
                 }
             }
 
@@ -378,8 +367,44 @@ impl App {
                 let _ = user_tx.send(UserEvent::Message(text)).await;
             }
         }
+    }
 
-        Ok(())
+    /// Handle a single terminal event. Returns true if the loop should quit.
+    async fn process_terminal_event(
+        event: Event,
+        state: &mut TuiState,
+        user_tx: &mpsc::Sender<UserEvent>,
+    ) -> bool {
+        match event {
+            Event::Key(key) => match handle_key_event(state, key, user_tx).await {
+                LoopAction::Continue => {}
+                LoopAction::Quit => return true,
+                LoopAction::SendQueued(text) => {
+                    state.push_message(ChatMessageKind::User, text.clone());
+                    state.streaming = true;
+                    let _ = user_tx.send(UserEvent::Message(text)).await;
+                }
+            },
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    state.scroll_offset =
+                        state.scroll_offset.saturating_add(MOUSE_SCROLL_STEP);
+                }
+                MouseEventKind::ScrollDown => {
+                    state.scroll_offset =
+                        state.scroll_offset.saturating_sub(MOUSE_SCROLL_STEP);
+                }
+                _ => {}
+            },
+            Event::Paste(text) => {
+                if !state.has_pending_approval() {
+                    // Allow pasting in normal input, question mode, and streaming.
+                    state.insert_str_at_cursor(&text);
+                }
+            }
+            _ => {}
+        }
+        false
     }
 
     /// Print a farewell screen after the TUI exits.
