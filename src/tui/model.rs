@@ -6,12 +6,13 @@ use std::time::Instant;
 
 use boba::widgets::text_area;
 use boba::widgets::text_area::TextArea;
+use boba::widgets::viewport::{self, Viewport};
 use boba::{subscribe, terminal_events, Command, Component, Model, Subscription, TerminalEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use tokio::sync::{mpsc, Mutex};
 
@@ -55,7 +56,7 @@ pub struct Flags {
 pub struct ClawApp {
     pub input: TextArea,
     pub messages: Vec<ChatMessage>,
-    pub scroll_offset: u16,
+    pub chat_viewport: Viewport,
     pub streaming: bool,
     pub queued_message: Option<String>,
     pub pending_approval: Option<PendingApproval>,
@@ -82,7 +83,7 @@ impl Model for ClawApp {
         let mut app = ClawApp {
             input,
             messages: Vec::new(),
-            scroll_offset: 0,
+            chat_viewport: Viewport::new(""),
             streaming: false,
             queued_message: None,
             pending_approval: None,
@@ -112,6 +113,8 @@ impl Model for ClawApp {
                 "\u{1f504} Session resumed".to_string(),
             );
         }
+
+        app.rebuild_chat_content();
 
         (app, Command::none())
     }
@@ -155,7 +158,7 @@ impl Model for ClawApp {
                         selected: 0,
                         responder: Some(responder),
                     });
-                    self.scroll_offset = 0;
+                    self.chat_viewport.goto_bottom();
                     Command::none()
                 }
                 AgentEvent::AskUser {
@@ -171,7 +174,7 @@ impl Model for ClawApp {
                         selected: 0,
                         responder: Some(responder),
                     });
-                    self.scroll_offset = 0;
+                    self.chat_viewport.goto_bottom();
                     Command::none()
                 }
                 AgentEvent::ToolCallDenied { tool_name, reason } => {
@@ -254,24 +257,24 @@ impl Model for ClawApp {
 
                 match key.code {
                     KeyCode::PageUp => {
-                        self.scroll_offset = self.scroll_offset.saturating_add(10);
+                        self.chat_viewport.update(viewport::Message::ScrollUp(10));
                         Command::none()
                     }
                     KeyCode::PageDown => {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(10);
+                        self.chat_viewport.update(viewport::Message::ScrollDown(10));
                         Command::none()
                     }
                     KeyCode::Up if self.streaming => {
-                        self.scroll_offset = self.scroll_offset.saturating_add(1);
+                        self.chat_viewport.update(viewport::Message::ScrollUp(1));
                         Command::none()
                     }
                     KeyCode::Down if self.streaming => {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        self.chat_viewport.update(viewport::Message::ScrollDown(1));
                         Command::none()
                     }
                     KeyCode::Up => {
                         if self.input.cursor_row() == 0 {
-                            self.scroll_offset = self.scroll_offset.saturating_add(1);
+                            self.chat_viewport.update(viewport::Message::ScrollUp(1));
                             Command::none()
                         } else {
                             self.input
@@ -283,7 +286,7 @@ impl Model for ClawApp {
                         if self.input.cursor_row()
                             >= self.input.line_count().saturating_sub(1)
                         {
-                            self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                            self.chat_viewport.update(viewport::Message::ScrollDown(1));
                             Command::none()
                         } else {
                             self.input
@@ -322,13 +325,11 @@ impl Model for ClawApp {
             }
             Msg::Mouse(mouse) => match mouse.kind {
                 MouseEventKind::ScrollUp => {
-                    self.scroll_offset =
-                        self.scroll_offset.saturating_add(MOUSE_SCROLL_STEP);
+                    self.chat_viewport.update(viewport::Message::ScrollUp(MOUSE_SCROLL_STEP));
                     Command::none()
                 }
                 MouseEventKind::ScrollDown => {
-                    self.scroll_offset =
-                        self.scroll_offset.saturating_sub(MOUSE_SCROLL_STEP);
+                    self.chat_viewport.update(viewport::Message::ScrollDown(MOUSE_SCROLL_STEP));
                     Command::none()
                 }
                 _ => Command::none(),
@@ -408,24 +409,8 @@ impl Model for ClawApp {
         ));
         frame.render_widget(Paragraph::new(header), chunks[0]);
 
-        // 2. Chat area
-        let chat_lines = render_chat_lines(&self.messages);
-        let chat_chunk = chunks[1];
-        let visible_height = chat_chunk.height;
-
-        // Use ratatui's line_count() for accurate wrapped line count that
-        // matches its internal rendering, preventing scroll miscalculations.
-        let chat_paragraph = Paragraph::new(chat_lines).wrap(Wrap { trim: false });
-        let total_lines = chat_paragraph.line_count(chat_chunk.width) as u16;
-        let max_scroll = total_lines.saturating_sub(visible_height);
-
-        // Clamp scroll locally (view is &self, so we cannot mutate scroll_offset).
-        let clamped_offset = self.scroll_offset.min(max_scroll);
-
-        // scroll_offset is lines scrolled up from the bottom (0 = at bottom).
-        let scroll = max_scroll.saturating_sub(clamped_offset);
-
-        frame.render_widget(chat_paragraph.scroll((scroll, 0)), chat_chunk);
+        // 2. Chat area — Viewport handles scrolling and rendering.
+        self.chat_viewport.view(frame, chunks[1]);
 
         // 3. Approval or question prompt (only when pending)
         let (input_chunk, status_chunk) = if has_approval {
@@ -500,7 +485,7 @@ impl ClawApp {
     /// Add a message to the chat history and reset scroll to bottom.
     pub fn push_message(&mut self, kind: ChatMessageKind, content: String) {
         self.messages.push(ChatMessage { kind, content });
-        self.scroll_offset = 0;
+        self.rebuild_chat_content();
     }
 
     /// Append text to the last assistant message, or create a new one if needed.
@@ -510,10 +495,16 @@ impl ClawApp {
             && msg.kind == ChatMessageKind::Assistant
         {
             msg.content.push_str(text);
-            self.scroll_offset = 0;
+            self.rebuild_chat_content();
             return;
         }
         self.push_message(ChatMessageKind::Assistant, text.to_string());
+    }
+
+    /// Rebuild the viewport's styled content from current messages and scroll to bottom.
+    fn rebuild_chat_content(&mut self) {
+        self.chat_viewport.set_styled_content(render_chat_lines(&self.messages));
+        self.chat_viewport.goto_bottom();
     }
 
     /// Update the status of the most recent tool call message matching the given tool name.
@@ -720,10 +711,9 @@ mod tests {
     fn push_message_resets_scroll() {
         let flags = test_flags();
         let (mut app, _cmd) = ClawApp::init(flags);
-
-        app.scroll_offset = 10;
         app.push_message(ChatMessageKind::User, "hello".to_string());
-        assert_eq!(app.scroll_offset, 0);
+        // After push, viewport should be at bottom (auto-scroll)
+        assert!(app.chat_viewport.at_bottom());
     }
 
     #[test]
@@ -894,7 +884,6 @@ mod tests {
     #[test]
     fn update_needs_approval_sets_pending() {
         let (mut app, _cmd) = ClawApp::init(test_flags());
-        app.scroll_offset = 5;
 
         let (tx, _rx) = tokio::sync::oneshot::channel();
         app.update(Msg::Agent(AgentEvent::ToolCallNeedsApproval {
@@ -909,7 +898,7 @@ mod tests {
         assert_eq!(approval.description, "Write to disk");
         assert_eq!(approval.tool_name, "write_file");
         assert_eq!(approval.pattern, Some("write_*".to_string()));
-        assert_eq!(app.scroll_offset, 0);
+        assert!(app.chat_viewport.at_bottom());
     }
 
     #[test]
@@ -1034,17 +1023,16 @@ mod tests {
     fn key_pageup_scrolls() {
         let (mut app, _) = ClawApp::init(test_flags());
         let key = KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE);
-        app.update(Msg::Key(key));
-        assert_eq!(app.scroll_offset, 10);
+        let cmd = app.update(Msg::Key(key));
+        assert!(cmd.is_none());
     }
 
     #[test]
     fn key_pagedown_scrolls() {
         let (mut app, _) = ClawApp::init(test_flags());
-        app.scroll_offset = 15;
         let key = KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
-        app.update(Msg::Key(key));
-        assert_eq!(app.scroll_offset, 5);
+        let cmd = app.update(Msg::Key(key));
+        assert!(cmd.is_none());
     }
 
     #[test]
@@ -1056,22 +1044,21 @@ mod tests {
             row: 0,
             modifiers: KeyModifiers::NONE,
         };
-        app.update(Msg::Mouse(mouse));
-        assert_eq!(app.scroll_offset, MOUSE_SCROLL_STEP);
+        let cmd = app.update(Msg::Mouse(mouse));
+        assert!(cmd.is_none());
     }
 
     #[test]
     fn mouse_scroll_down() {
         let (mut app, _) = ClawApp::init(test_flags());
-        app.scroll_offset = 10;
         let mouse = crossterm::event::MouseEvent {
             kind: MouseEventKind::ScrollDown,
             column: 0,
             row: 0,
             modifiers: KeyModifiers::NONE,
         };
-        app.update(Msg::Mouse(mouse));
-        assert_eq!(app.scroll_offset, 10 - MOUSE_SCROLL_STEP);
+        let cmd = app.update(Msg::Mouse(mouse));
+        assert!(cmd.is_none());
     }
 
     #[test]
@@ -1101,8 +1088,9 @@ mod tests {
         let (mut app, _) = ClawApp::init(test_flags());
         // Input has a single line, cursor is on row 0
         let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-        app.update(Msg::Key(key));
-        assert_eq!(app.scroll_offset, 1);
+        let cmd = app.update(Msg::Key(key));
+        assert!(cmd.is_none());
+        // Input cursor should still be at row 0 (scroll went to chat, not input)
     }
 
     #[test]
@@ -1110,18 +1098,17 @@ mod tests {
         let (mut app, _) = ClawApp::init(test_flags());
         app.streaming = true;
         let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-        app.update(Msg::Key(key));
-        assert_eq!(app.scroll_offset, 1);
+        let cmd = app.update(Msg::Key(key));
+        assert!(cmd.is_none());
     }
 
     #[test]
     fn key_down_during_streaming_scrolls() {
         let (mut app, _) = ClawApp::init(test_flags());
         app.streaming = true;
-        app.scroll_offset = 5;
         let key = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-        app.update(Msg::Key(key));
-        assert_eq!(app.scroll_offset, 4);
+        let cmd = app.update(Msg::Key(key));
+        assert!(cmd.is_none());
     }
 
     #[test]
