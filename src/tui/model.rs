@@ -357,7 +357,13 @@ impl Model for ClawApp {
                 _ => Command::none(),
             },
             Msg::Paste(text) => {
-                if self.pending_approval.is_some() {
+                // Block paste during approval and multichoice question modes
+                // where the input area is not active.
+                let in_multichoice = self
+                    .pending_question
+                    .as_ref()
+                    .is_some_and(|q| !q.options.is_empty());
+                if self.pending_approval.is_some() || in_multichoice {
                     Command::none()
                 } else {
                     self.input
@@ -583,6 +589,7 @@ impl ClawApp {
                 && name == tool_name
             {
                 *status = new_status;
+                self.rebuild_chat_content();
                 return;
             }
         }

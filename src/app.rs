@@ -265,8 +265,9 @@ fn replay_session_messages(session: &persistence::SessionState) -> Vec<ChatMessa
                         }
                         ContentBlock::ToolUse { name, input, .. } => {
                             let params_summary = input.to_string();
-                            let truncated: String = params_summary.chars().take(80).collect();
-                            let display = if truncated.len() < params_summary.len() {
+                            let char_count = params_summary.chars().count();
+                            let display = if char_count > 80 {
+                                let truncated: String = params_summary.chars().take(80).collect();
                                 format!("{}({}...)", name, truncated)
                             } else {
                                 format!("{}({})", name, params_summary)
