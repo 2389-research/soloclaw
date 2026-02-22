@@ -14,7 +14,7 @@ use crate::approval::ApprovalsFile;
 const APP_NAME: &str = "soloclaw";
 
 /// Top-level configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     pub llm: LlmConfig,
@@ -22,18 +22,6 @@ pub struct Config {
     pub permissions: PermissionsConfig,
     pub skills: SkillsConfig,
     pub compaction: CompactionConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            llm: LlmConfig::default(),
-            approval: ApprovalConfig::default(),
-            permissions: PermissionsConfig::default(),
-            skills: SkillsConfig::default(),
-            compaction: CompactionConfig::default(),
-        }
-    }
 }
 
 /// LLM provider configuration.
@@ -109,19 +97,11 @@ impl Default for ApprovalConfig {
 }
 
 /// Runtime permission toggles.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct PermissionsConfig {
     /// If true, bypasses all approval checks and executes tool calls directly.
     pub bypass_approvals: bool,
-}
-
-impl Default for PermissionsConfig {
-    fn default() -> Self {
-        Self {
-            bypass_approvals: false,
-        }
-    }
 }
 
 /// Compaction configuration for automatic conversation summarization.

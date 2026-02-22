@@ -1,24 +1,14 @@
 // ABOUTME: App orchestrator — wires together LLM client, tools, approval, TUI, and agent loop.
-// ABOUTME: Handles terminal setup/teardown, MCP connections, and the main event loop.
+// ABOUTME: Sets up subsystems then runs the boba TUI event loop.
 
-use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
-use crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event, KeyEvent, MouseEventKind,
-};
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 use tokio::sync::{mpsc, Mutex};
 
 use mux::prelude::*;
+
+use boba::{MouseMode, ProgramOptions};
 
 use crate::agent;
 use crate::agent::AgentLoopParams;
@@ -31,16 +21,8 @@ use crate::prompt::{
 };
 use crate::session::SessionLogger;
 use crate::session::persistence;
-use crate::tui::input::{InputResult, handle_key};
-use crate::tui::state::{
-    AgentEvent, ChatMessageKind, PendingApproval, PendingQuestion, ToolCallStatus, TuiState,
-    UserEvent,
-};
-
-use crate::tui::ui::render;
-
-const MOUSE_SCROLL_STEP: u16 = 3;
-const MAX_AGENT_EVENTS_PER_TICK: usize = 128;
+use crate::tui::model::{ClawApp, Flags};
+use crate::tui::state::{ChatMessage, ChatMessageKind, ToolCallStatus, UserEvent};
 
 /// Top-level application that orchestrates all subsystems.
 pub struct App {
@@ -104,7 +86,7 @@ impl App {
 
         // Create channels for agent <-> TUI communication.
         let (user_tx, user_rx) = mpsc::channel::<UserEvent>(16);
-        let (agent_tx, mut agent_rx) = mpsc::channel::<AgentEvent>(64);
+        let (agent_tx, agent_rx) = mpsc::channel::<crate::tui::state::AgentEvent>(64);
 
         let model = self.config.llm.model.clone();
         let max_tokens = self.config.llm.max_tokens;
@@ -185,123 +167,51 @@ impl App {
             agent_tx,
         ));
 
-        // Set up terminal.
-        enable_raw_mode()?;
-        let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
-        let backend = CrosstermBackend::new(stdout);
-        let mut terminal = Terminal::new(backend)?;
+        // Clone user_tx before moving it into Flags (need it for quit signal after boba exits).
+        let user_tx_for_quit = user_tx.clone();
 
-        // Set up panic hook to restore terminal on panic.
-        let original_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            let _ = disable_raw_mode();
-            let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste);
-            original_hook(info);
-        }));
-
-        // Create TUI state.
-        let mut state = TuiState::new(model.clone(), tool_count);
-        state.context_window = compaction::context_window_for_model(&model);
-        state.workspace_dir = workspace_path.to_string_lossy().to_string();
-
-        // Show a startup message listing loaded context and skill files.
-        let mut startup_parts: Vec<String> = Vec::new();
-        if context_file_names.is_empty() {
-            startup_parts.push("No context files found".to_string());
+        // Build session replay messages for the TUI.
+        let replay_messages = if let Some(ref session) = loaded_session {
+            replay_session_messages(session)
         } else {
-            startup_parts.push(format!("Context: {}", context_file_names.join(", ")));
-        }
-        if !skill_file_names.is_empty() {
-            startup_parts.push(format!("Skills: {}", skill_file_names.join(", ")));
-        }
-        state.push_message(ChatMessageKind::System, startup_parts.join(" | "));
+            vec![]
+        };
 
-        // Replay loaded session messages into the TUI for display.
-        if let Some(ref session) = loaded_session {
-            for msg in &session.messages {
-                match msg.role {
-                    Role::User => {
-                        for block in &msg.content {
-                            match block {
-                                ContentBlock::Text { text } => {
-                                    if !text.is_empty() {
-                                        state.push_message(ChatMessageKind::User, text.clone());
-                                    }
-                                }
-                                ContentBlock::ToolResult {
-                                    content, is_error, ..
-                                } => {
-                                    state.push_message(
-                                        ChatMessageKind::ToolResult {
-                                            is_error: *is_error,
-                                        },
-                                        content.clone(),
-                                    );
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    Role::Assistant => {
-                        for block in &msg.content {
-                            match block {
-                                ContentBlock::Text { text } => {
-                                    if !text.is_empty() {
-                                        state.push_message(
-                                            ChatMessageKind::Assistant,
-                                            text.clone(),
-                                        );
-                                    }
-                                }
-                                ContentBlock::ToolUse { name, input, .. } => {
-                                    let params_summary = input.to_string();
-                                    let truncated: String =
-                                        params_summary.chars().take(80).collect();
-                                    let display = if truncated.len() < params_summary.len() {
-                                        format!("{}({}...)", name, truncated)
-                                    } else {
-                                        format!("{}({})", name, params_summary)
-                                    };
-                                    state.push_message(
-                                        ChatMessageKind::ToolCall {
-                                            tool_name: name.clone(),
-                                            status: ToolCallStatus::Allowed,
-                                        },
-                                        display,
-                                    );
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-            state.push_message(
-                ChatMessageKind::System,
-                "🔄 Session resumed".to_string(),
-            );
-        }
+        // Build startup message.
+        let startup_message = build_startup_message(&context_file_names, &skill_file_names);
 
-        // Run the event loop.
-        let result = Self::event_loop(&mut terminal, &mut state, &user_tx, &mut agent_rx).await;
+        let flags = Flags {
+            user_tx,
+            agent_rx,
+            model_name: model.clone(),
+            tool_count,
+            context_window: compaction::context_window_for_model(&model),
+            workspace_dir: workspace_path.to_string_lossy().to_string(),
+            replay_messages,
+            startup_message,
+        };
 
-        // Cleanup terminal.
-        disable_raw_mode()?;
-        execute!(
-            terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture,
-            DisableBracketedPaste
-        )?;
-        terminal.show_cursor()?;
+        let options = ProgramOptions {
+            fps: 30,
+            mouse_mode: Some(MouseMode::CellMotion),
+            catch_panics: true,
+            // Disable boba's built-in signal handler so Ctrl+C reaches our
+            // Model::update as a key event for double-tap quit detection.
+            handle_signals: false,
+            ..Default::default()
+        };
+
+        // Run the boba TUI — blocks until quit.
+        let result = boba::run_with::<ClawApp>(flags, options).await;
 
         // Print farewell screen.
-        Self::print_exit_screen(&state);
+        if let Ok(ref app) = result {
+            print_exit_screen(app);
+        }
 
         // Signal agent to quit and wait for it.
-        let _ = user_tx.send(UserEvent::Quit).await;
-        drop(user_tx);
+        let _ = user_tx_for_quit.send(UserEvent::Quit).await;
+        drop(user_tx_for_quit);
         let _ = agent_handle.await;
 
         // Shutdown MCP clients.
@@ -309,585 +219,126 @@ impl App {
             let _ = mcp_client.shutdown().await;
         }
 
-        result
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => Err(anyhow::anyhow!("TUI error: {}", e)),
+        }
     }
+}
 
-    /// Main event loop: draw TUI, poll for keyboard input, drain agent events.
-    async fn event_loop(
-        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-        state: &mut TuiState,
-        user_tx: &mpsc::Sender<UserEvent>,
-        agent_rx: &mut mpsc::Receiver<AgentEvent>,
-    ) -> anyhow::Result<()> {
-        loop {
-            // Draw the current state.
-            terminal.draw(|frame| render(frame, state))?;
-
-            // Wait for at least one terminal event (50ms timeout).
-            if event::poll(Duration::from_millis(50))? {
-                // Drain ALL pending terminal events before redrawing.
-                // Without this, mouse motion events from EnableMouseCapture
-                // flood the queue and starve keyboard input.
-                loop {
-                    let quit = Self::process_terminal_event(
-                        event::read()?,
-                        state,
-                        user_tx,
-                    )
-                    .await;
-                    if quit {
-                        return Ok(());
-                    }
-                    // Keep draining while more events are immediately available.
-                    if !event::poll(Duration::ZERO)? {
-                        break;
+/// Replay loaded session messages into ChatMessage format for the TUI.
+fn replay_session_messages(session: &persistence::SessionState) -> Vec<ChatMessage> {
+    let mut messages = Vec::new();
+    for msg in &session.messages {
+        match msg.role {
+            Role::User => {
+                for block in &msg.content {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            if !text.is_empty() {
+                                messages.push(ChatMessage {
+                                    kind: ChatMessageKind::User,
+                                    content: text.clone(),
+                                });
+                            }
+                        }
+                        ContentBlock::ToolResult { content, is_error, .. } => {
+                            messages.push(ChatMessage {
+                                kind: ChatMessageKind::ToolResult { is_error: *is_error },
+                                content: content.clone(),
+                            });
+                        }
+                        _ => {}
                     }
                 }
             }
-
-            // Drain a bounded number of pending agent events so user input stays responsive.
-            let mut queued_send: Option<String> = None;
-            for _ in 0..MAX_AGENT_EVENTS_PER_TICK {
-                let Ok(event) = agent_rx.try_recv() else {
-                    break;
-                };
-                match handle_agent_event(state, event) {
-                    LoopAction::Continue => {}
-                    LoopAction::Quit => break,
-                    LoopAction::SendQueued(text) => {
-                        queued_send = Some(text);
-                        break;
+            Role::Assistant => {
+                for block in &msg.content {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            if !text.is_empty() {
+                                messages.push(ChatMessage {
+                                    kind: ChatMessageKind::Assistant,
+                                    content: text.clone(),
+                                });
+                            }
+                        }
+                        ContentBlock::ToolUse { name, input, .. } => {
+                            let params_summary = input.to_string();
+                            let truncated: String = params_summary.chars().take(80).collect();
+                            let display = if truncated.len() < params_summary.len() {
+                                format!("{}({}...)", name, truncated)
+                            } else {
+                                format!("{}({})", name, params_summary)
+                            };
+                            messages.push(ChatMessage {
+                                kind: ChatMessageKind::ToolCall {
+                                    tool_name: name.clone(),
+                                    status: ToolCallStatus::Allowed,
+                                },
+                                content: display,
+                            });
+                        }
+                        _ => {}
                     }
                 }
             }
-            // Auto-send any queued message after the drain loop completes.
-            if let Some(text) = queued_send {
-                state.push_message(ChatMessageKind::User, text.clone());
-                state.streaming = true;
-                let _ = user_tx.send(UserEvent::Message(text)).await;
-            }
         }
     }
-
-    /// Handle a single terminal event. Returns true if the loop should quit.
-    async fn process_terminal_event(
-        event: Event,
-        state: &mut TuiState,
-        user_tx: &mpsc::Sender<UserEvent>,
-    ) -> bool {
-        match event {
-            Event::Key(key) => match handle_key_event(state, key, user_tx).await {
-                LoopAction::Continue => {}
-                LoopAction::Quit => return true,
-                LoopAction::SendQueued(text) => {
-                    state.push_message(ChatMessageKind::User, text.clone());
-                    state.streaming = true;
-                    let _ = user_tx.send(UserEvent::Message(text)).await;
-                }
-            },
-            Event::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::ScrollUp => {
-                    state.scroll_offset =
-                        state.scroll_offset.saturating_add(MOUSE_SCROLL_STEP);
-                }
-                MouseEventKind::ScrollDown => {
-                    state.scroll_offset =
-                        state.scroll_offset.saturating_sub(MOUSE_SCROLL_STEP);
-                }
-                _ => {}
-            },
-            Event::Paste(text) => {
-                if !state.has_pending_approval() {
-                    // Allow pasting in normal input, question mode, and streaming.
-                    state.insert_str_at_cursor(&text);
-                }
-            }
-            _ => {}
-        }
-        false
-    }
-
-    /// Print a farewell screen after the TUI exits.
-    fn print_exit_screen(state: &TuiState) {
-        let elapsed_secs = state.session_start.elapsed().as_secs();
-        let elapsed = if elapsed_secs >= 3600 {
-            format!("{}h {:02}m", elapsed_secs / 3600, (elapsed_secs % 3600) / 60)
-        } else {
-            format!("{}m {:02}s", elapsed_secs / 60, elapsed_secs % 60)
-        };
-        let msg_count = state.messages.len();
-
-        println!();
-        println!("  🐾 \x1b[1mThanks for hanging out with soloclaw!\x1b[0m");
-        println!();
-        println!("  ✨ You showed up for AI today, and that's pretty cool.");
-        println!("  🕐 Session lasted {elapsed} with {msg_count} messages exchanged.");
-        println!();
-        println!("  💜 Until next time — keep building awesome things!");
-        println!();
-    }
+    messages
 }
 
-/// Whether the event loop should continue or exit.
-enum LoopAction {
-    Continue,
-    Quit,
-    /// Auto-send a queued message that was typed during streaming.
-    SendQueued(String),
+/// Build the startup system message showing loaded context and skill files.
+fn build_startup_message(context_file_names: &[String], skill_file_names: &[String]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if context_file_names.is_empty() {
+        parts.push("No context files found".to_string());
+    } else {
+        parts.push(format!("Context: {}", context_file_names.join(", ")));
+    }
+    if !skill_file_names.is_empty() {
+        parts.push(format!("Skills: {}", skill_file_names.join(", ")));
+    }
+    parts.join(" | ")
 }
 
-/// Process a keyboard event and potentially send a message to the agent.
-async fn handle_key_event(
-    state: &mut TuiState,
-    key: KeyEvent,
-    user_tx: &mpsc::Sender<UserEvent>,
-) -> LoopAction {
-    match handle_key(state, key) {
-        InputResult::None => LoopAction::Continue,
-        InputResult::Send(text) => {
-            state.push_message(ChatMessageKind::User, text.clone());
-            state.streaming = true;
-            let _ = user_tx.send(UserEvent::Message(text)).await;
-            LoopAction::Continue
-        }
-        InputResult::Queue(text) => {
-            state.queued_message = Some(text);
-            LoopAction::Continue
-        }
-        InputResult::Approval(_decision) => {
-            // The approval resolution is handled inside handle_key via the oneshot channel.
-            // We just need to clear the pending approval state (already done by handle_key).
-            LoopAction::Continue
-        }
-        InputResult::QuestionAnswered(_answer) => {
-            // The question resolution is handled inside handle_key via the oneshot channel.
-            // We just need to clear the pending question state (already done by handle_key).
-            LoopAction::Continue
-        }
-        InputResult::Quit => LoopAction::Quit,
-    }
-}
+/// Print a farewell screen after the TUI exits.
+fn print_exit_screen(app: &ClawApp) {
+    let elapsed_secs = app.session_start.elapsed().as_secs();
+    let elapsed = if elapsed_secs >= 3600 {
+        format!("{}h {:02}m", elapsed_secs / 3600, (elapsed_secs % 3600) / 60)
+    } else {
+        format!("{}m {:02}s", elapsed_secs / 60, elapsed_secs % 60)
+    };
+    let msg_count = app.messages.len();
 
-/// Process an agent event and update the TUI state accordingly.
-fn handle_agent_event(state: &mut TuiState, event: AgentEvent) -> LoopAction {
-    match event {
-        AgentEvent::TextDelta(text) => {
-            state.append_to_last_assistant(&text);
-        }
-        AgentEvent::TextDone => {
-            // Text streaming for this block is done; nothing special needed.
-        }
-        AgentEvent::ToolCallStarted {
-            tool_name,
-            params_summary,
-        } => {
-            let content = format!("{}({})", tool_name, params_summary);
-            state.push_message(
-                ChatMessageKind::ToolCall {
-                    tool_name,
-                    status: ToolCallStatus::Pending,
-                },
-                content,
-            );
-        }
-        AgentEvent::ToolCallApproved { tool_name } => {
-            // Update the last tool call message for this tool to show Allowed status.
-            update_tool_status(state, &tool_name, ToolCallStatus::Allowed);
-        }
-        AgentEvent::ToolCallNeedsApproval {
-            description,
-            pattern,
-            tool_name,
-            responder,
-        } => {
-            state.pending_approval = Some(PendingApproval {
-                description,
-                pattern,
-                tool_name,
-                selected: 0,
-                responder: Some(responder),
-            });
-            state.scroll_offset = 0;
-        }
-        AgentEvent::AskUser {
-            question,
-            tool_call_id,
-            options,
-            responder,
-        } => {
-            state.pending_question = Some(PendingQuestion {
-                question,
-                tool_call_id,
-                options,
-                selected: 0,
-                responder: Some(responder),
-            });
-            state.scroll_offset = 0;
-        }
-        AgentEvent::ToolCallDenied { tool_name, reason } => {
-            update_tool_status(state, &tool_name, ToolCallStatus::Denied);
-            state.push_message(
-                ChatMessageKind::System,
-                format!("Tool '{}' denied: {}", tool_name, reason),
-            );
-        }
-        AgentEvent::ToolResult {
-            tool_name: _,
-            content,
-            is_error,
-        } => {
-            state.push_message(ChatMessageKind::ToolResult { is_error }, content);
-        }
-        AgentEvent::Usage {
-            input_tokens,
-            output_tokens,
-        } => {
-            state.total_tokens += (input_tokens + output_tokens) as u64;
-            state.context_used = input_tokens as u64;
-        }
-        AgentEvent::Error(msg) => {
-            state.push_message(ChatMessageKind::System, format!("⚠️ Error: {}", msg));
-            state.streaming = false;
-        }
-        AgentEvent::Done => {
-            state.streaming = false;
-            // Auto-send any queued message from the user.
-            if let Some(queued) = state.queued_message.take() {
-                return LoopAction::SendQueued(queued);
-            }
-        }
-        AgentEvent::CompactionStarted => {
-            state.push_message(
-                ChatMessageKind::System,
-                "🗜️ Compacting conversation...".to_string(),
-            );
-        }
-        AgentEvent::CompactionDone {
-            old_count,
-            new_count,
-        } => {
-            state.push_message(
-                ChatMessageKind::System,
-                format!(
-                    "✅ Compacted: {} messages \u{2192} {} messages",
-                    old_count, new_count
-                ),
-            );
-        }
-    }
+    let farewells: &[(&str, &str)] = &[
+        ("You showed up for AI today, and that's pretty cool.", "Until next time \u{2014} keep building awesome things!"),
+        ("Another great session in the books.", "Go touch some grass, you've earned it."),
+        ("Your tokens were well spent today.", "May your context windows be ever generous."),
+        ("The models appreciated your prompts.", "See you on the other side of the terminal."),
+        ("You and the machines made magic today.", "Now go stare at something that isn't a screen."),
+        ("Pair programming with AI: peak 2020s energy.", "Don't forget to hydrate, champion."),
+        ("Today's vibe: human + LLM = unstoppable.", "Log off. Rest. Come back stronger."),
+        ("Every keystroke brought us closer to the singularity.", "Just kidding. Mostly. See ya!"),
+        ("Solid work. The codebase thanks you.", "Remember: sleep > one more feature."),
+        ("You didn't just use AI, you collaborated with it.", "That's the future, and you're living it."),
+        ("The terminal misses you already.", "But seriously, take a break."),
+        ("Great chat. 10/10, would token again.", "May your builds be green and your bugs be shallow."),
+        ("Thanks for letting me ride shotgun on this one.", "I'll be here when you get back. Always."),
+        ("Another day, another diff.", "Go do something analog for a while."),
+        ("You brought the intent, I brought the tokens.", "Together we were pretty rad."),
+    ];
 
-    LoopAction::Continue
-}
+    let idx = (elapsed_secs as usize ^ msg_count) % farewells.len();
+    let (line1, line2) = farewells[idx];
 
-/// Update the status of the most recent tool call message matching the given tool name.
-fn update_tool_status(state: &mut TuiState, tool_name: &str, new_status: ToolCallStatus) {
-    for msg in state.messages.iter_mut().rev() {
-        if let ChatMessageKind::ToolCall {
-            tool_name: ref name,
-            ref mut status,
-        } = msg.kind
-        {
-            if name == tool_name {
-                *status = new_status;
-                return;
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn handle_agent_text_delta_appends() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        handle_agent_event(&mut state, AgentEvent::TextDelta("Hello".to_string()));
-        assert_eq!(state.messages.len(), 1);
-        assert_eq!(state.messages[0].content, "Hello");
-        assert_eq!(state.messages[0].kind, ChatMessageKind::Assistant);
-
-        handle_agent_event(&mut state, AgentEvent::TextDelta(" world".to_string()));
-        assert_eq!(state.messages.len(), 1);
-        assert_eq!(state.messages[0].content, "Hello world");
-    }
-
-    #[test]
-    fn handle_agent_done_stops_streaming() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        state.streaming = true;
-        handle_agent_event(&mut state, AgentEvent::Done);
-        assert!(!state.streaming);
-    }
-
-    #[test]
-    fn handle_agent_error_stops_streaming() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        state.streaming = true;
-        handle_agent_event(
-            &mut state,
-            AgentEvent::Error("something went wrong".to_string()),
-        );
-        assert!(!state.streaming);
-        assert_eq!(state.messages.len(), 1);
-        assert!(state.messages[0].content.contains("something went wrong"));
-    }
-
-    #[test]
-    fn handle_agent_tool_call_started() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        handle_agent_event(
-            &mut state,
-            AgentEvent::ToolCallStarted {
-                tool_name: "bash".to_string(),
-                params_summary: r#"{"command":"ls"}"#.to_string(),
-            },
-        );
-        assert_eq!(state.messages.len(), 1);
-        match &state.messages[0].kind {
-            ChatMessageKind::ToolCall { tool_name, status } => {
-                assert_eq!(tool_name, "bash");
-                assert_eq!(*status, ToolCallStatus::Pending);
-            }
-            _ => panic!("expected ToolCall message"),
-        }
-    }
-
-    #[test]
-    fn handle_agent_tool_approved_updates_status() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        handle_agent_event(
-            &mut state,
-            AgentEvent::ToolCallStarted {
-                tool_name: "bash".to_string(),
-                params_summary: "{}".to_string(),
-            },
-        );
-        handle_agent_event(
-            &mut state,
-            AgentEvent::ToolCallApproved {
-                tool_name: "bash".to_string(),
-            },
-        );
-        match &state.messages[0].kind {
-            ChatMessageKind::ToolCall { status, .. } => {
-                assert_eq!(*status, ToolCallStatus::Allowed);
-            }
-            _ => panic!("expected ToolCall message"),
-        }
-    }
-
-    #[test]
-    fn handle_agent_tool_denied() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        handle_agent_event(
-            &mut state,
-            AgentEvent::ToolCallStarted {
-                tool_name: "bash".to_string(),
-                params_summary: "{}".to_string(),
-            },
-        );
-        handle_agent_event(
-            &mut state,
-            AgentEvent::ToolCallDenied {
-                tool_name: "bash".to_string(),
-                reason: "not allowed".to_string(),
-            },
-        );
-        // Tool call status should be Denied.
-        match &state.messages[0].kind {
-            ChatMessageKind::ToolCall { status, .. } => {
-                assert_eq!(*status, ToolCallStatus::Denied);
-            }
-            _ => panic!("expected ToolCall message"),
-        }
-        // System message about denial.
-        assert_eq!(state.messages.len(), 2);
-        assert!(state.messages[1].content.contains("not allowed"));
-    }
-
-    #[test]
-    fn handle_agent_tool_result() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        handle_agent_event(
-            &mut state,
-            AgentEvent::ToolResult {
-                tool_name: "bash".to_string(),
-                content: "file1.txt\nfile2.txt".to_string(),
-                is_error: false,
-            },
-        );
-        assert_eq!(state.messages.len(), 1);
-        match &state.messages[0].kind {
-            ChatMessageKind::ToolResult { is_error } => {
-                assert!(!is_error);
-            }
-            _ => panic!("expected ToolResult message"),
-        }
-    }
-
-    #[test]
-    fn handle_agent_needs_approval_sets_pending() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        handle_agent_event(
-            &mut state,
-            AgentEvent::ToolCallNeedsApproval {
-                description: "bash(rm -rf /)".to_string(),
-                pattern: Some("/usr/bin/rm".to_string()),
-                tool_name: "bash".to_string(),
-                responder: tx,
-            },
-        );
-        assert!(state.has_pending_approval());
-        let approval = state.pending_approval.as_ref().unwrap();
-        assert_eq!(approval.tool_name, "bash");
-        assert_eq!(approval.description, "bash(rm -rf /)");
-        assert_eq!(approval.selected, 0);
-    }
-
-    #[test]
-    fn update_tool_status_finds_last_matching() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        state.push_message(
-            ChatMessageKind::ToolCall {
-                tool_name: "bash".to_string(),
-                status: ToolCallStatus::Pending,
-            },
-            "first".to_string(),
-        );
-        state.push_message(ChatMessageKind::Assistant, "some text".to_string());
-        state.push_message(
-            ChatMessageKind::ToolCall {
-                tool_name: "bash".to_string(),
-                status: ToolCallStatus::Pending,
-            },
-            "second".to_string(),
-        );
-
-        update_tool_status(&mut state, "bash", ToolCallStatus::Allowed);
-
-        // The second (last) tool call should be updated.
-        match &state.messages[2].kind {
-            ChatMessageKind::ToolCall { status, .. } => {
-                assert_eq!(*status, ToolCallStatus::Allowed);
-            }
-            _ => panic!("expected ToolCall"),
-        }
-        // The first should remain Pending.
-        match &state.messages[0].kind {
-            ChatMessageKind::ToolCall { status, .. } => {
-                assert_eq!(*status, ToolCallStatus::Pending);
-            }
-            _ => panic!("expected ToolCall"),
-        }
-    }
-
-    #[test]
-    fn handle_agent_ask_user_sets_pending_question() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        state.scroll_offset = 5;
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        handle_agent_event(
-            &mut state,
-            AgentEvent::AskUser {
-                question: "What is your name?".to_string(),
-                tool_call_id: "call-42".to_string(),
-                options: vec![],
-                responder: tx,
-            },
-        );
-        assert!(state.has_pending_question());
-        let q = state.pending_question.as_ref().unwrap();
-        assert_eq!(q.question, "What is your name?");
-        assert_eq!(q.tool_call_id, "call-42");
-        assert_eq!(state.scroll_offset, 0);
-    }
-
-    #[test]
-    fn handle_agent_ask_user_with_options() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        handle_agent_event(
-            &mut state,
-            AgentEvent::AskUser {
-                question: "Pick a color".to_string(),
-                tool_call_id: "call-mc".to_string(),
-                options: vec!["red".to_string(), "green".to_string(), "blue".to_string()],
-                responder: tx,
-            },
-        );
-        assert!(state.has_pending_question());
-        let q = state.pending_question.as_ref().unwrap();
-        assert_eq!(q.options.len(), 3);
-        assert_eq!(q.options[0], "red");
-        assert_eq!(q.selected, 0);
-    }
-
-    #[test]
-    fn handle_agent_ask_user_responder_is_set() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        handle_agent_event(
-            &mut state,
-            AgentEvent::AskUser {
-                question: "pick a color".to_string(),
-                tool_call_id: "call-99".to_string(),
-                options: vec![],
-                responder: tx,
-            },
-        );
-        // Verify the responder is present and can send
-        let q = state.pending_question.take().unwrap();
-        q.responder.unwrap().send("blue".to_string()).unwrap();
-        assert_eq!(rx.blocking_recv().unwrap(), "blue");
-    }
-
-    #[test]
-    fn handle_agent_done_sends_queued_message() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        state.streaming = true;
-        state.queued_message = Some("follow up".to_string());
-        let action = handle_agent_event(&mut state, AgentEvent::Done);
-        assert!(!state.streaming);
-        assert!(state.queued_message.is_none());
-        match action {
-            LoopAction::SendQueued(text) => assert_eq!(text, "follow up"),
-            _ => panic!("expected SendQueued"),
-        }
-    }
-
-    #[test]
-    fn handle_agent_done_no_queue_continues() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        state.streaming = true;
-        let action = handle_agent_event(&mut state, AgentEvent::Done);
-        assert!(!state.streaming);
-        assert!(matches!(action, LoopAction::Continue));
-    }
-
-    #[test]
-    fn handle_agent_compaction_started() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        handle_agent_event(&mut state, AgentEvent::CompactionStarted);
-        assert_eq!(state.messages.len(), 1);
-        assert_eq!(state.messages[0].kind, ChatMessageKind::System);
-        assert_eq!(state.messages[0].content, "🗜️ Compacting conversation...");
-    }
-
-    #[test]
-    fn handle_agent_compaction_done() {
-        let mut state = TuiState::new("test-model".to_string(), 3);
-        handle_agent_event(
-            &mut state,
-            AgentEvent::CompactionDone {
-                old_count: 50,
-                new_count: 5,
-            },
-        );
-        assert_eq!(state.messages.len(), 1);
-        assert_eq!(state.messages[0].kind, ChatMessageKind::System);
-        assert!(state.messages[0].content.contains("50"));
-        assert!(state.messages[0].content.contains("5"));
-    }
+    println!();
+    println!("  \u{1f43e} \x1b[1mThanks for using claw!\x1b[0m");
+    println!();
+    println!("  \u{2728} {line1}");
+    println!("  \u{1f550} Session lasted {elapsed} with {msg_count} messages exchanged.");
+    println!();
+    println!("  \u{1f49c} {line2}");
+    println!();
 }

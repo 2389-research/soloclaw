@@ -119,13 +119,13 @@ impl ApprovalEngine {
     ///
     /// If the decision is AllowAlways, the pattern is added to the allowlist and persisted.
     pub fn resolve(&self, tool_name: &str, pattern: Option<&str>, decision: ApprovalDecision) {
-        if decision == ApprovalDecision::AllowAlways {
-            if let Some(pat) = pattern {
-                let mut approvals = self.approvals.lock().expect("approvals lock poisoned");
-                approvals.add_to_allowlist(tool_name, pat);
-                // Best-effort save — callers should handle errors if critical.
-                let _ = approvals.save(&self.approvals_path);
-            }
+        if decision == ApprovalDecision::AllowAlways
+            && let Some(pat) = pattern
+        {
+            let mut approvals = self.approvals.lock().expect("approvals lock poisoned");
+            approvals.add_to_allowlist(tool_name, pat);
+            // Best-effort save — callers should handle errors if critical.
+            let _ = approvals.save(&self.approvals_path);
         }
     }
 
