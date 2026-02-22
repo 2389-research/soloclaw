@@ -12,7 +12,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKi
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use tokio::sync::{mpsc, Mutex};
 
@@ -68,6 +68,8 @@ pub struct ClawApp {
     pub context_used: u64,
     pub session_start: Instant,
     pub workspace_dir: String,
+    /// Timestamp of the last Ctrl+C press for double-tap quit detection.
+    last_ctrl_c: Option<Instant>,
     user_tx: mpsc::Sender<UserEvent>,
     agent_rx: Arc<Mutex<Option<mpsc::Receiver<AgentEvent>>>>,
 }
@@ -77,8 +79,8 @@ impl Model for ClawApp {
     type Flags = Flags;
 
     fn init(flags: Flags) -> (Self, Command<Msg>) {
-        let mut input = TextArea::new();
-        input.focus(); // Start focused so typing works immediately
+        let mut input = TextArea::new().with_line_numbers(false).with_soft_wrap(true);
+        input.focus();
 
         let mut app = ClawApp {
             input,
@@ -95,6 +97,7 @@ impl Model for ClawApp {
             context_used: 0,
             session_start: Instant::now(),
             workspace_dir: flags.workspace_dir,
+            last_ctrl_c: None,
             user_tx: flags.user_tx,
             agent_rx: Arc::new(Mutex::new(Some(flags.agent_rx))),
         };
@@ -240,11 +243,30 @@ impl Model for ClawApp {
                 }
             },
             Msg::Key(key) => {
-                // Ctrl+C always quits
+                // Ctrl+Q always quits immediately.
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('q')
+                {
+                    return Command::quit();
+                }
+
+                // Double Ctrl+C within 500ms quits; single Ctrl+C just primes
+                // the timer and clears the input as a "cancel" gesture.
                 if key.modifiers.contains(KeyModifiers::CONTROL)
                     && key.code == KeyCode::Char('c')
                 {
-                    return Command::quit();
+                    let now = Instant::now();
+                    if let Some(prev) = self.last_ctrl_c {
+                        if now.duration_since(prev).as_millis() < 500 {
+                            return Command::quit();
+                        }
+                    }
+                    self.last_ctrl_c = Some(now);
+                    // Single Ctrl+C cancels current input.
+                    if !self.input.value().is_empty() {
+                        self.input.set_value("");
+                    }
+                    return Command::none();
                 }
 
                 // Route to approval/question mode handlers when active
@@ -356,23 +378,47 @@ impl Model for ClawApp {
         // Maximum height the input area can grow to (in terminal rows).
         const MAX_INPUT_HEIGHT: u16 = 8;
 
-        // Calculate input height based on line count; fixed when approval is pending.
+        // Calculate input height based on visual line count (accounting for soft
+        // wrap at terminal width). The inner width is the frame width minus 2 for
+        // the left/right border cells.
         let input_height = if has_approval {
             3
         } else {
-            // +2 accounts for top and bottom borders of TextArea's block
-            (self.input.line_count() as u16 + 2).clamp(3, MAX_INPUT_HEIGHT)
+            let inner_width = area.width.saturating_sub(2).max(1) as usize;
+            let visual_lines: usize = self
+                .input
+                .value()
+                .split('\n')
+                .map(|line| {
+                    let w = unicode_width::UnicodeWidthStr::width(line);
+                    if w == 0 { 1 } else { (w + inner_width - 1) / inner_width }
+                })
+                .sum();
+            // +2 accounts for top and bottom borders
+            (visual_lines as u16 + 2).clamp(3, MAX_INPUT_HEIGHT)
         };
 
-        // Compute prompt area height: approval/question prompt or multichoice needs more rows.
+        // Compute prompt area height dynamically so long questions/options wrap
+        // instead of being truncated. Each logical Line is measured against the
+        // terminal width to determine how many visual rows it occupies.
         let prompt_height = if has_approval {
-            3
+            if let Some(ref approval) = self.pending_approval {
+                let lines = approval_line(&approval.description, approval.selected);
+                visual_line_height(&lines, area.width)
+            } else {
+                3
+            }
         } else if has_question {
-            let has_options = self
-                .pending_question
-                .as_ref()
-                .is_some_and(|q| !q.options.is_empty());
-            if has_options { 4 } else { 3 }
+            if let Some(ref question) = self.pending_question {
+                let lines = if question.options.is_empty() {
+                    question_lines(&question.question)
+                } else {
+                    multichoice_lines(&question.question, &question.options, question.selected)
+                };
+                visual_line_height(&lines, area.width)
+            } else {
+                3
+            }
         } else {
             0
         };
@@ -400,13 +446,15 @@ impl Model for ClawApp {
             .constraints(constraints)
             .split(area);
 
-        // 1. Header
-        let header = Line::from(Span::styled(
-            " \u{1f43e} claw",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ));
+        // 1. Header (with debug key counter)
+        let header = Line::from(vec![
+            Span::styled(
+                " \u{1f43e} claw",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
         frame.render_widget(Paragraph::new(header), chunks[0]);
 
         // 2. Chat area — Viewport handles scrolling and rendering.
@@ -416,7 +464,10 @@ impl Model for ClawApp {
         let (input_chunk, status_chunk) = if has_approval {
             if let Some(ref approval) = self.pending_approval {
                 let approval_lines = approval_line(&approval.description, approval.selected);
-                frame.render_widget(Paragraph::new(approval_lines), chunks[2]);
+                frame.render_widget(
+                    Paragraph::new(approval_lines).wrap(Wrap { trim: false }),
+                    chunks[2],
+                );
             }
             (chunks[3], chunks[4])
         } else if has_question {
@@ -426,7 +477,10 @@ impl Model for ClawApp {
                 } else {
                     multichoice_lines(&question.question, &question.options, question.selected)
                 };
-                frame.render_widget(Paragraph::new(q_lines), chunks[2]);
+                frame.render_widget(
+                    Paragraph::new(q_lines).wrap(Wrap { trim: false }),
+                    chunks[2],
+                );
             }
             (chunks[3], chunks[4])
         } else {
@@ -449,9 +503,21 @@ impl Model for ClawApp {
                 inner,
             );
         } else {
-            // Normal, streaming, and question modes use the boba TextArea.
-            // TextArea renders its own border and cursor.
-            self.input.view(frame, input_chunk);
+            // Render a block around the input area with streaming status in the title.
+            let mut block = Block::default()
+                .borders(Borders::TOP | Borders::BOTTOM)
+                .border_style(Style::default().fg(Color::DarkGray));
+            if self.streaming {
+                let title = if self.queued_message.is_some() {
+                    " \u{1f4e8} message queued "
+                } else {
+                    " \u{26a1} streaming... "
+                };
+                block = block.title(Span::styled(title, Style::default().fg(Color::DarkGray)));
+            }
+            let inner = block.inner(input_chunk);
+            frame.render_widget(block, input_chunk);
+            self.input.view(frame, inner);
         }
 
         // 5. Status bar
@@ -669,6 +735,28 @@ impl ClawApp {
             let _ = responder.send(answer);
         }
     }
+}
+
+/// Calculate how many terminal rows a set of styled Lines will occupy when
+/// wrapped at the given width. Each Line's spans are measured by unicode
+/// display width and ceiling-divided by the available width.
+fn visual_line_height(lines: &[Line], width: u16) -> u16 {
+    let w = width.max(1) as usize;
+    lines
+        .iter()
+        .map(|line| {
+            let line_width: usize = line
+                .spans
+                .iter()
+                .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                .sum();
+            if line_width == 0 {
+                1
+            } else {
+                ((line_width + w - 1) / w) as u16
+            }
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -1012,11 +1100,33 @@ mod tests {
     }
 
     #[test]
-    fn key_ctrl_c_quits() {
+    fn single_ctrl_c_clears_input_does_not_quit() {
         let (mut app, _) = ClawApp::init(test_flags());
+        app.input.set_value("some text");
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         let cmd = app.update(Msg::Key(key));
-        assert!(!cmd.is_none());
+        assert!(cmd.is_none(), "single Ctrl+C should not quit");
+        assert_eq!(app.input.value(), "", "single Ctrl+C should clear input");
+    }
+
+    #[test]
+    fn double_ctrl_c_quits() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        // First press primes the timer.
+        let cmd = app.update(Msg::Key(key));
+        assert!(cmd.is_none());
+        // Second press within 500ms quits.
+        let cmd = app.update(Msg::Key(key));
+        assert!(!cmd.is_none(), "double Ctrl+C should quit");
+    }
+
+    #[test]
+    fn ctrl_q_quits() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        let key = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
+        let cmd = app.update(Msg::Key(key));
+        assert!(!cmd.is_none(), "Ctrl+Q should quit immediately");
     }
 
     #[test]
@@ -1059,6 +1169,31 @@ mod tests {
         };
         let cmd = app.update(Msg::Mouse(mouse));
         assert!(cmd.is_none());
+    }
+
+    #[test]
+    fn typing_character_appears_in_input() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        // Verify focus is set
+        assert!(app.input.focused(), "TextArea should be focused after init");
+        // Type 'a'
+        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.update(Msg::Key(key));
+        assert_eq!(
+            app.input.value(),
+            "a",
+            "Typing 'a' should insert into TextArea"
+        );
+    }
+
+    #[test]
+    fn typing_multiple_characters() {
+        let (mut app, _) = ClawApp::init(test_flags());
+        for c in ['h', 'e', 'l', 'l', 'o'] {
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+            app.update(Msg::Key(key));
+        }
+        assert_eq!(app.input.value(), "hello");
     }
 
     #[test]
@@ -1550,5 +1685,33 @@ mod tests {
         assert!(denial_msg.content.contains("rm_rf"));
         assert!(denial_msg.content.contains("denied"));
         assert!(denial_msg.content.contains("too dangerous"));
+    }
+
+    #[test]
+    fn visual_line_height_short_line_is_one_row() {
+        let lines = vec![Line::from("hello")];
+        assert_eq!(visual_line_height(&lines, 80), 1);
+    }
+
+    #[test]
+    fn visual_line_height_wraps_long_line() {
+        // 20 chars in a 10-col terminal = 2 rows
+        let lines = vec![Line::from("a]".repeat(10))];
+        assert_eq!(visual_line_height(&lines, 10), 2);
+    }
+
+    #[test]
+    fn visual_line_height_sums_multiple_lines() {
+        let lines = vec![
+            Line::from("short"),                     // 1 row at width 20
+            Line::from("this is a longer string!!"), // 25 chars → 2 rows at width 20
+        ];
+        assert_eq!(visual_line_height(&lines, 20), 3);
+    }
+
+    #[test]
+    fn visual_line_height_empty_line_counts_as_one() {
+        let lines = vec![Line::from("")];
+        assert_eq!(visual_line_height(&lines, 80), 1);
     }
 }

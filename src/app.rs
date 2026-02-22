@@ -195,6 +195,9 @@ impl App {
             fps: 30,
             mouse_mode: Some(MouseMode::CellMotion),
             catch_panics: true,
+            // Disable boba's built-in signal handler so Ctrl+C reaches our
+            // Model::update as a key event for double-tap quit detection.
+            handle_signals: false,
             ..Default::default()
         };
 
@@ -309,12 +312,33 @@ fn print_exit_screen(app: &ClawApp) {
     };
     let msg_count = app.messages.len();
 
+    let farewells: &[(&str, &str)] = &[
+        ("You showed up for AI today, and that's pretty cool.", "Until next time \u{2014} keep building awesome things!"),
+        ("Another great session in the books.", "Go touch some grass, you've earned it."),
+        ("Your tokens were well spent today.", "May your context windows be ever generous."),
+        ("The models appreciated your prompts.", "See you on the other side of the terminal."),
+        ("You and the machines made magic today.", "Now go stare at something that isn't a screen."),
+        ("Pair programming with AI: peak 2020s energy.", "Don't forget to hydrate, champion."),
+        ("Today's vibe: human + LLM = unstoppable.", "Log off. Rest. Come back stronger."),
+        ("Every keystroke brought us closer to the singularity.", "Just kidding. Mostly. See ya!"),
+        ("Solid work. The codebase thanks you.", "Remember: sleep > one more feature."),
+        ("You didn't just use AI, you collaborated with it.", "That's the future, and you're living it."),
+        ("The terminal misses you already.", "But seriously, take a break."),
+        ("Great chat. 10/10, would token again.", "May your builds be green and your bugs be shallow."),
+        ("Thanks for letting me ride shotgun on this one.", "I'll be here when you get back. Always."),
+        ("Another day, another diff.", "Go do something analog for a while."),
+        ("You brought the intent, I brought the tokens.", "Together we were pretty rad."),
+    ];
+
+    let idx = (elapsed_secs as usize ^ msg_count) % farewells.len();
+    let (line1, line2) = farewells[idx];
+
     println!();
     println!("  \u{1f43e} \x1b[1mThanks for using claw!\x1b[0m");
     println!();
-    println!("  \u{2728} You showed up for AI today, and that's pretty cool.");
+    println!("  \u{2728} {line1}");
     println!("  \u{1f550} Session lasted {elapsed} with {msg_count} messages exchanged.");
     println!();
-    println!("  \u{1f49c} Until next time \u{2014} keep building awesome things!");
+    println!("  \u{1f49c} {line2}");
     println!();
 }
